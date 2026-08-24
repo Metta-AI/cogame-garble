@@ -92,8 +92,8 @@ metered in characters, the market walks every turn, and portfolio value at the h
   **surplus** `sur[s] = deal[s mod 4]`; its **demand** is `dem[s] = deal[(s + 1 + rng.rand(2)) mod 4]`
   redrawn until `dem[s] != sur[s]`. Seat `s` starts with `units[s][sur[s]] = 20`, `0` of everything
   else, and `cash[s] = 120` credits.
-- **Contract.** Seat `s` is paid `premium[s] = 6 + rng.rand(4)` (6…9) credits for each unit of
-  `dem[s]` it holds at the horizon, up to `quota[s] = 12 + rng.rand(8)` (12…19) units. Beyond the
+- **Contract.** Seat `s` is paid `premium[s] = 6 + rng.rand(3)` (6…9) credits for each unit of
+  `dem[s]` it holds at the horizon, up to `quota[s] = 12 + rng.rand(7)` (12…19) units. Beyond the
   quota the units are worth only the market price. **A seat's own contract is private**; nobody else
   learns its demand commodity, its premium or its quota except by inference from what it says.
 - Every draw above comes from **one** RNG stream at `initSim`, in this order: aliases, prices,
