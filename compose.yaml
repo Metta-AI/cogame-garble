@@ -1,0 +1,7 @@
+services:
+  garble:
+    image: coworld-garble:latest
+    platform: linux/amd64
+    build:
+      context: .
+      network: host
