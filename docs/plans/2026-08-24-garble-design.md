@@ -148,12 +148,16 @@ P    = max(6, turns div 2)                  # swell period, in turns
 phi  = rng.rand(P - 1)                      # drawn at initSim
 base = 0.15 + 0.60 * (0.5 - 0.5*cos(2*PI*(t + phi)/P))
 burst[t] = (rng.rand(1.0) < 0.12)           # drawn for every t at initSim
+curve[t] = clamp(base * config.noiseScale, 0.05, 0.95)   # PUBLISHED, burst-free
 raw  = (base + (if burst[t]: 0.35 else: 0.0)) * config.noiseScale
 interference[t] = clamp(raw, 0.05, 0.95)    # rounded to 3 decimals
 ```
 
 The **base curve for every turn of the episode is published** to all seats and to spectators from
-turn 0 — a policy can plan to talk in the quiet. The **bursts are not**: they are the surprise. The
+turn 0 — a policy can plan to talk in the quiet. It carries `noiseScale`, exactly as
+`interference[t]` does, so the forecast a seat reads is on the same scale as the meter it will
+play into; the two differ only by the burst. The **bursts are not** published: they are the
+surprise. The
 meter therefore swells and fades on screen exactly as the idea asks, and it is derivable from
 `seed` + `turns` + `noiseScale` alone.
 
@@ -697,7 +701,7 @@ truth and the viewer computes the lie.
 
 `wire` holds the **live turn's** transmissions (or the last completed turn once `done`), each with
 its per-recipient garbling, word by word — that is what the stage draws SAID over HEARD. `curve` is
-the published interference base for every turn. `band` is `CLEAR` (< 0.25), `HAZY` (< 0.50),
+the published interference base for every turn, on the `noiseScale` scale (§*The wire*). `band` is `CLEAR` (< 0.25), `HAZY` (< 0.50),
 `ROUGH` (< 0.75) or `STORM`.
 
 ### `resultsJson` — platform-facing, policy names
