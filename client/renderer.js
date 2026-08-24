@@ -906,6 +906,29 @@
       (VOID_WHY[event.reason] || event.reason);
   }
 
+  // The note's closing lines: the leader with its ratio and credits on a
+  // full episode, the played-of-capped turn count on a deadline ending.
+  function endText(event, nameMap, maxTurns) {
+    if (event.text === "deadline") {
+      var cap = maxTurns && maxTurns > event.turn ? maxTurns : event.turn;
+      return "Episode deadline \u2014 scored on " + event.turn + " of " +
+        cap + " turns.";
+    }
+    var scores = event.scores || [];
+    var portfolios = event.portfolios || [];
+    var best = -Infinity;
+    var leader = -1;
+    scores.forEach(function (score, i) {
+      if (score > best) { best = score; leader = i; }
+    });
+    if (leader < 0) {
+      return "FINAL \u2014 " + event.turn + " turns played.";
+    }
+    return "FINAL \u2014 " + C.clampName(nameMap.seat(leader)) + " " +
+      best.toFixed(2) + "\u00d7 (" + (portfolios[leader] || 0) + " cr) \u00b7 " +
+      event.turn + " turns played.";
+  }
+
   function pricesText(event, names) {
     var parts = [];
     (event.prices || []).forEach(function (price, i) {
@@ -917,7 +940,8 @@
   // `heardBySay` maps an event index to that transmission's per-listener
   // garbling, which the wasm/server states carry; the heard text is never
   // in the events themselves.
-  function renderFeed(element, events, nameMap, currentIndex, heardBySay) {
+  function renderFeed(element, events, nameMap, currentIndex, heardBySay,
+      maxTurns) {
     if (!element) return;
     var live = currentIndex === undefined;
     var limit = live ? events.length : currentIndex;
@@ -962,9 +986,7 @@
           line = voidText(event, nameMap);
           break;
         case "end":
-          line = event.text === "deadline" ?
-            "Episode deadline \u2014 scored on " + event.turn + " turns." :
-            "FINAL \u2014 " + event.turn + " turns played.";
+          line = endText(event, nameMap, maxTurns);
           break;
         default:
           line = JSON.stringify(event);
@@ -1356,7 +1378,7 @@
               effects.absorb(latest.events || []);
               absorbHeard(latest);
               renderFeed(options.feed, latest.events || [], nameMap,
-                undefined, heardBySay);
+                undefined, heardBySay, latest.turns);
               if (options.clock) {
                 options.clock.textContent = matchHeader(latest, nameMap);
               }
@@ -1426,6 +1448,7 @@
     var events = payload.events || [];
     var states = payload.states || [];
     var nameMap = C.makeNameMap(payload.names, payload.policyNames);
+    var maxTurns = (payload.config && payload.config.turns) || 0;
     var heardBySay = buildHeardMap(events, states);
     var index = 0;
     var playing = true;
@@ -1458,7 +1481,8 @@
         scrub.update(index);
         if (jumped) effects.reset();
         effects.absorb(events.slice(0, index), jumped);
-        renderFeed(options.feed, events, nameMap, index, heardBySay);
+        renderFeed(options.feed, events, nameMap, index, heardBySay,
+          maxTurns);
         if (options.label) {
           options.label.textContent = index + " / " + events.length;
         }
