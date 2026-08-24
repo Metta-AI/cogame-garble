@@ -396,14 +396,18 @@ proc endTurn*(sim: var Sim) =
     sim.settle("complete")
 
 proc clipRunes(text: string, limit: int): string =
-  ## Every truncation in Garble is on a RUNE boundary: a string cut mid
-  ## UTF-8 renders in a browser but fails a strict JSON parser, and every
-  ## string here lands in the replay.
+  ## Every truncation in Garble is on a RUNE boundary and MARKS the cut with
+  ## `…`: a string cut mid UTF-8 renders in a browser but fails a strict JSON
+  ## parser, and every string here lands in the replay. The marker costs one
+  ## rune OF the limit, so a clipped string is never longer than the caller
+  ## allowed — which is what keeps an airtime clip inside the meter.
   if limit <= 0:
     return ""
   if text.runeLen <= limit:
     return text
-  text.runeSubStr(0, limit)
+  if limit == 1:
+    return "\u2026"
+  text.runeSubStr(0, limit - 1) & "\u2026"
 
 proc normaliseChannel*(sim: Sim, seat, channel: int): int =
   ## Lenient: anything that is not another seat is the radio.

@@ -122,6 +122,8 @@ suite "airtime":
     check event.text.runeLen == MaxTextRunes
     check event.text.validateUtf8() == -1
     check event.cost == MaxTextRunes
+    ## The cut is marked, and the marker is inside the cap, not beyond it.
+    check event.text.endsWith("\u2026")
 
   test "a text that outruns the meter is clipped and flagged":
     var sim = initSim(fixtureConfig(seed = 3))
@@ -132,6 +134,7 @@ suite "airtime":
     check event.clipped
     check event.text.runeLen == 30
     check event.text.validateUtf8() == -1
+    check event.text.endsWith("\u2026")
     check sim.airtime[0] == 0
 
   test "an empty meter silences the seat and opens no ticket":
