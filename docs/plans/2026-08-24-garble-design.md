@@ -576,6 +576,14 @@ bounded text, never raise).
    asserts **exactly the fields it heard**.
 4. It stops transmitting when `airtime < 30`, keeping the meter for confirms.
 
+Those five numbers — the `min(5, …)` lot, the `+3` ask, the `+1` bid, the `0.5` loud band and the
+`30`-rune floor — are `BaselineParams.DefaultBaseline` in `src/garble/llm.nim`, and they are swept,
+not guessed: `scripts/tune_baselines.nim` plays the whole 576-point grid around them over 60 seeds
+× four tables and scores every point against the four properties the baselines must hold (a deal
+on every seed and ≥ 3 on the median seed; a shark-heavy table mishears more than an honest one;
+the quiet band outscores the storm; the mean quoter score is above 1.0). The table it prints, and
+the per-parameter reading of it, are committed at `docs/tuning/baseline-grid.md`.
+
 **`shark`** — filler #2, the antagonist that makes the shield legible.
 
 Same offers as `quoter` but **never repeated** (terse, fast, steal-able), and it confirms

@@ -87,6 +87,8 @@ bytes carry the truth and the viewer computes the lie.
 - `data/` — the five cog sprites and the arena floor
 - `scripts/art/` — the nano-banana source sheet and the split script that
   produced `data/cog_*_front.png`
+- `scripts/tune_baselines.nim` — the grid sweep the scripted baselines'
+  parameters were chosen from (`docs/tuning/baseline-grid.md`)
 - `docs/plans/` — the design note this game was built from
 
 ## Local loop

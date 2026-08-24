@@ -153,12 +153,20 @@ proc newLlmClient*(config: GameConfig): LlmClient =
 
 # ---- Scripted baselines -----------------------------------------------------
 
-const
-  ## Below this the baselines stop transmitting and keep the meter for
-  ## confirms.
-  ScriptedAirtimeFloor = 30
-  ## The meter above which `quoter` repeats every field once.
-  LoudBand = 0.5
+type
+  BaselineParams* = object
+    ## The scripted baselines' five tunables, in one object so they can be
+    ## swept. `DefaultBaseline` is what ships; the grid those values were
+    ## picked from is `scripts/tune_baselines.nim`, recorded in
+    ## `docs/tuning/baseline-grid.md`.
+    airtimeFloor*: int   ## below this the baseline keeps the meter for confirms
+    loudBand*: float     ## the meter at which `quoter` repeats every field
+    sellMarkup*: int     ## ask over the market price for the surplus
+    buyMarkup*: int      ## bid over the market price for the contract good
+    maxLot*: int         ## units per offer
+
+const DefaultBaseline* = BaselineParams(airtimeFloor: 30, loudBand: 0.5,
+  sellMarkup: 3, buyMarkup: 1, maxLot: 5)
 
 proc numberWord(value: int): string =
   $value
@@ -177,18 +185,19 @@ proc offerText(verb: string, qty: int, commodity: int, price: int,
   if repeat: parts.add(numberWord(price))
   parts.join(" ")
 
-proc scriptedOffer(sim: Sim, seat: int, repeat: bool): string =
+proc scriptedOffer(sim: Sim, seat: int, repeat: bool,
+    params: BaselineParams): string =
   ## Quote out of the surplus first, then bid for the contract commodity.
   let prices = sim.livePrices()
   let surplus = sim.sur[seat]
   let demand = sim.dem[seat]
   if sim.units[seat][surplus] >= 3:
-    let qty = min(5, sim.units[seat][surplus])
-    let price = clamp(prices[surplus] + 3, 1, MaxPrice)
+    let qty = min(params.maxLot, sim.units[seat][surplus])
+    let price = clamp(prices[surplus] + params.sellMarkup, 1, MaxPrice)
     return offerText("SELL", qty, surplus, price, repeat)
   if sim.units[seat][demand] < sim.quota[seat]:
-    let qty = min(5, sim.quota[seat] - sim.units[seat][demand])
-    let price = clamp(prices[demand] + 1, 1, MaxPrice)
+    let qty = min(params.maxLot, sim.quota[seat] - sim.units[seat][demand])
+    let price = clamp(prices[demand] + params.buyMarkup, 1, MaxPrice)
     if qty > 0:
       return offerText("BUY", qty, demand, price, repeat)
   ""
@@ -237,13 +246,14 @@ proc favourable(value: int, word: string, wantHigh: bool, floorAt: int): int =
         (not wantHigh and candidate < result):
       result = candidate
 
-proc scriptedAction*(sim: Sim, seat: int, kind: ScriptKind): Decision =
+proc scriptedAction*(sim: Sim, seat: int, kind: ScriptKind,
+    params = DefaultBaseline): Decision =
   ## Rule-based baseline for `seat`. Always legal by construction: bounded
   ## quantities and prices, bounded text, never raises, never writes notes.
-  let repeat = kind == skQuoter and sim.liveInterference() >= LoudBand
+  let repeat = kind == skQuoter and sim.liveInterference() >= params.loudBand
   result.channel = Radio
-  if sim.airtime[seat] >= ScriptedAirtimeFloor:
-    result.text = scriptedOffer(sim, seat, repeat)
+  if sim.airtime[seat] >= params.airtimeFloor:
+    result.text = scriptedOffer(sim, seat, repeat, params)
   let pick = improvingTicket(sim, seat)
   if not pick.found:
     return
