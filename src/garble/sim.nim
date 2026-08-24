@@ -909,7 +909,20 @@ proc eventFromJson*(node: JsonNode): GameEvent =
 
 # ---- Replay -----------------------------------------------------------------
 
+const LegalReasons = ["complete", "deadline"]
+
+proc sameFloats(a, b: seq[float]): bool =
+  if a.len != b.len:
+    return false
+  for index in 0 ..< a.len:
+    if abs(a[index] - b[index]) >= 1e-9:
+      return false
+  true
+
 proc sameEvent(a, b: GameEvent): bool =
+  ## EVERY field a derived event (turn, deal, void, end) records is compared:
+  ## a recorded field the replay does not check is a field a tampered replay
+  ## can lie about while the viewer draws it.
   a.kind == b.kind and a.turn == b.turn and a.seat == b.seat and
     a.ticket == b.ticket and a.qty == b.qty and a.price == b.price and
     a.commodity == b.commodity and a.fill == b.fill and
@@ -917,7 +930,9 @@ proc sameEvent(a, b: GameEvent): bool =
     a.saidQty == b.saidQty and a.saidPrice == b.saidPrice and
     a.saidCommodity == b.saidCommodity and a.partial == b.partial and
     a.misheard == b.misheard and a.reason == b.reason and
+    a.cash == b.cash and a.text == b.text and
     a.prices == b.prices and a.portfolios == b.portfolios and
+    a.airtime == b.airtime and sameFloats(a.scores, b.scores) and
     abs(a.interference - b.interference) < 1e-9 and a.burst == b.burst
 
 proc replayMatch*(config: GameConfig, events: seq[GameEvent]): seq[Sim] =
@@ -964,6 +979,9 @@ proc replayMatch*(config: GameConfig, events: seq[GameEvent]): seq[Sim] =
           " does not match the rules")
       pending = 0
     of evEnd:
+      if event.text notin LegalReasons:
+        raise newException(GarbleError,
+          "illegal ending reason '" & event.text & "'")
       if not sim.done:
         sim.endTurn()
       if not sim.done:
@@ -973,4 +991,7 @@ proc replayMatch*(config: GameConfig, events: seq[GameEvent]): seq[Sim] =
         raise newException(GarbleError,
           "recorded ending '" & event.text & "' does not match '" &
           sim.reason & "'")
+      if not sameEvent(event, sim.events[^1]):
+        raise newException(GarbleError,
+          "the recorded ending does not match the re-derived one")
     result.add(sim)

@@ -564,6 +564,37 @@ suite "replay derivation":
       expect GarbleError:
         discard replayMatch(live.config, tampered)
 
+  test "a tampered turn airtime, end score or ending reason raises":
+    let live = playEpisode(11)
+    block turnAirtime:
+      var tampered = live.events
+      var touched = false
+      for index in 0 ..< tampered.len:
+        if tampered[index].kind == evTurn and not touched and
+            tampered[index].airtime.len > 0:
+          tampered[index].airtime[0] += 1
+          touched = true
+      check touched
+      expect GarbleError:
+        discard replayMatch(live.config, tampered)
+    block endScores:
+      var tampered = live.events
+      check tampered[^1].kind == evEnd
+      check tampered[^1].scores.len == Seats
+      tampered[^1].scores[0] += 0.5
+      expect GarbleError:
+        discard replayMatch(live.config, tampered)
+    block endPortfolios:
+      var tampered = live.events
+      tampered[^1].portfolios[0] += 1
+      expect GarbleError:
+        discard replayMatch(live.config, tampered)
+    block illegalReason:
+      var tampered = live.events
+      tampered[^1].text = "abandoned"
+      expect GarbleError:
+        discard replayMatch(live.config, tampered)
+
   test "a deadline ending settles the replayed sim":
     var live = initSim(fixtureConfig(seed = 8))
     for turn in 0 ..< 4:
