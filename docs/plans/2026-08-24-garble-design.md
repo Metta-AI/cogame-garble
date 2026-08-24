@@ -877,7 +877,8 @@ committed **`chmod +x`**) is the `coworld build` hook: it compiles
 the pinned `emscripten/emsdk` container from `Dockerfile.replay-viewer`, then copies
 `garble_replay.js`, `garble_replay.wasm`, `replay-viewer/index.html`,
 `replay-viewer/static_replay.js`, **`client/chrome_common.js`**, `client/renderer.js`,
-`client/chrome.css` and the six `data/` assets into the bundle. It **`mkdir -p`s the output parent
+`client/chrome.css` and the seven `data/` assets (the five cog sprites, `arena_floor.png`,
+`font.ttf`) into the bundle. It **`mkdir -p`s the output parent
 before the containment check** (ecos, 2026-08-23: the inherited hook exits 1 on a fresh CI checkout
 because `coworld build` pre-creates that directory and CI does not). The final `grep -q 'data-replay'`
 assertion on the copied `static_replay.js` is kept.
@@ -976,10 +977,12 @@ Canvas scene over `data/arena_floor.png` in babel's Ink & Print palette; seat co
   word renders the *heard* word **in red with a red underline** and the said word ghosted above it
   at 60 % size. A clean word is ink. This is SAID vs HEARD side by side, word for word, and the
   audience always knows what was actually said.
-- **The five cogs** ring the card. Seats 0–3 use babel's `soldier_<red|blue|green|yellow>_front.png`
-  sprites verbatim; **seat 4 uses `soldier_red_front.png` drawn through a violet tint** (offscreen
-  canvas, `source-atop` fill at 0.75 with `COLOR_HEX.violet`) so the fifth cog is real art in the
-  same hand, not a placeholder box. Under each cog: name, portfolio in credits, score as `1.42×`,
+- **The five cogs** ring the card. Each seat has its **own** finished sprite —
+  `data/cog_<red|blue|green|yellow|violet>_front.png`, 128×128 RGBA, one radio kit per seat (whip
+  antenna, dish, headset-and-key, crank set, rabbit ears) — generated for this game with
+  nano-banana from the Softmax cog reference (§*Packaging*) and loaded by name in
+  `client/renderer.js`. **There is no tint path**: the fifth cog is real art in its own colour, not
+  the red sprite recoloured at draw time. Under each cog: name, portfolio in credits, score as `1.42×`,
   and an **airtime meter** (a small bar, `airtime / 900`) that visibly drains; a `SILENT` tag when
   it is empty, a `RADIO` or `LINE → Gizmo` tag for what the cog transmitted this turn.
 - **The tape** runs along the bottom: settled deals as trade tickets. A clean deal prints one line.
@@ -1064,9 +1067,17 @@ not at desktop width.
   **`Dockerfile.replay-viewer`** — babel's, renamed.
 - **`garble.nimble`** — version `0.1.0`, `srcDir = "src"`, `requires "nim >= 2.2.4"`, `bitworld`,
   `mummy >= 0.4.7`, `curly >= 1.1.1`, `whisky`; `nimby.lock` copied from babel.
-- **`data/`** — babel's `arena_floor.png`, `font.ttf`, `FONT_LICENSE.txt` and the four
-  `soldier_<red|blue|green|yellow>_front.png` sprites, unchanged. Real art from the starter; the
-  fifth cog is the red sprite violet-tinted at draw time (§*Viewer*). No placeholder art anywhere.
+- **`data/`** — babel's `arena_floor.png`, `font.ttf` and `FONT_LICENSE.txt`, unchanged, plus the
+  five generated cog sprites `cog_<red|blue|green|yellow|violet>_front.png` (128×128 RGBA). The
+  starter's four `soldier_*_front.png` sprites are **not** shipped: nothing references them.
+  Real art, not placeholders, per `playbooks/make-coworld.md` §Phase 0 and
+  `playbooks/art-nanobanana.md` — a deviation from this note's original violet-tint plan, accepted
+  by the coordinator on 2026-08-24.
+- **`scripts/art/`** — how that art was made, committed so it is reproducible:
+  `gen_cog_sheet.py` (one nano-banana / Gemini render of five cogs in a row from
+  `scripts/art/source/cog_reference.png`, written to `scripts/art/source/cogs_sheet.png`) and
+  `split_cog_sheet.py` (backdrop key-out, split, crop, pad, resize → the five `data/cog_*.png`).
+  The derived PNGs are committed; CI never regenerates art and never needs an image-model key.
 - **`README.md`** — the game in a paragraph, the layout list, the local loop, how to field a policy.
 
 ### `coworld_manifest_template.json`
