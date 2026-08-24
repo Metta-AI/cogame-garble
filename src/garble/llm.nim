@@ -695,14 +695,13 @@ proc decideAll*(
       try:
         let text = client.textOf(responses[position].response,
           responses[position].error, batch[position].url)
-        let decision = parseDecision(sim, seat, extractJsonObject(text))
-        ## Reject illegal replies here so the retry carries the hint. An
-        ## INADMISSIBLE confirm is not illegal — it is a legal move whose
-        ## outcome is a void — so it is never probed and never retried.
-        var probe = sim
-        probe.applySay(seat, decision.channel, decision.text, decision.notes,
-          false)
-        result[index] = decision
+        ## `parseDecision` IS the ill-formed gate: it raises on unreadable
+        ## JSON and on a confirm whose fields are missing or out of range,
+        ## and it caps text, notes and channel, so a decision that gets this
+        ## far is always applicable. An INADMISSIBLE confirm is not
+        ## ill-formed — it is a legal move whose outcome is a void — so it is
+        ## never rejected here and never retried.
+        result[index] = parseDecision(sim, seat, extractJsonObject(text))
       except CatchableError as error:
         echo "garble llm: seat ", seat, " attempt ", attempt, " failed: ",
           error.msg
