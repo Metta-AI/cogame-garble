@@ -153,9 +153,21 @@
     ctx.restore();
   }
 
+  // #grain is the inherited CRT drift at opacity 0.05. A static burst
+  // drives it at double opacity for the wash's life and hands it straight
+  // back to the stylesheet afterwards — the CSS rule is never edited.
+  function driveGrain(active) {
+    var grain = document.getElementById("grain");
+    if (!grain) return;
+    var want = active ? "0.1" : "";
+    if (grain.style.opacity !== want) grain.style.opacity = want;
+  }
+
   // A seeded scanline wash over the whole stage on a burst turn.
   function drawBurstWash(ctx, layout, view, age) {
-    if (!view.burst || age === null || age > BURST_MS) return;
+    var active = !!view.burst && age !== null && age <= BURST_MS;
+    driveGrain(active);
+    if (!active) return;
     var alpha = 0.16 * (1 - age / BURST_MS);
     ctx.save();
     ctx.globalAlpha = alpha;
