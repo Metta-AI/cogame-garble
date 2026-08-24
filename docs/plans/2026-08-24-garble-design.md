@@ -521,8 +521,14 @@ The **CONFIRMABLE TICKETS** block prints the ready-made JSON skeleton for each t
 the same code that validates it. That is the escrow 0.1.3 lesson applied: precompute the legal
 choice set in the observation instead of drilling the prompt, or a formal-output game falls back to
 scripted on a large share of turns. `HeardWindow = 3`: the last three turns of heard traffic are
-printed in full, earlier turns compress to `turn t  <alias> → <channel>: <first 40 runes>…`, which
-bounds the prompt at roughly 3 000 runes on a twelve-turn episode.
+printed in full, earlier turns compress to `turn t  <alias> → <channel>: <first 40 runes>…`. The
+heard window is the only block that is *windowed*; the public tape and the confirmable-ticket
+block are printed in full, so the observation grows with the episode rather than sitting at a
+fixed size. Measured over 20 seeds of a full scripted table, the peak user prompt is **≈ 5 400
+runes at 12 turns**, ≈ 7 100 at 18 and ≈ 8 100 at the 24-turn cap, against a constant **≈ 3 060
+rune** system prompt — about 3 000 tokens at the cap, comfortably inside one request and well
+under `maxOutputTokens`' companion input limits, but not the "roughly 3 000 runes" this note first
+estimated.
 
 ### Reply schema, and the caps
 

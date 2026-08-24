@@ -349,8 +349,11 @@ proc ticketBlock(sim: Sim, seat: int): string =
   "TICKETS YOU MAY CONFIRM:\n" & lines.join("\n") & "\n\n"
 
 proc heardBlock(sim: Sim, seat: int): string =
-  ## The last `HeardWindow` turns in full, earlier turns summarised — which
-  ## bounds the prompt at roughly 3 000 runes on a twelve-turn episode.
+  ## The last `HeardWindow` turns in full, earlier turns summarised to 40
+  ## runes. This is the only block that is windowed — the tape and the
+  ## ticket block print in full — so the whole user prompt peaks at about
+  ## 5 400 runes on a twelve-turn episode and 8 100 at the 24-turn cap
+  ## (measured; see docs/plans/2026-08-24-garble-design.md).
   var lines: seq[string]
   for event in sim.events:
     if event.kind != evSay or event.seat == seat or event.silent:
