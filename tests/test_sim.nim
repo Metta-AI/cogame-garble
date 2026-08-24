@@ -640,6 +640,26 @@ suite "replay derivation":
       expect GarbleError:
         discard replayMatch(live.config, tampered)
 
+  test "the endcard's results are the re-derived ones, field for field":
+    ## The viewer rebuilds the config from the replay's ALIASES, exactly as
+    ## replay-viewer/garble_replay.nim and server.nim's replay mode do, and
+    ## draws the endcard from the last re-derived frame. That frame must
+    ## agree with the recorded results block on every field but the name
+    ## space (results are platform-facing and carry POLICY names).
+    let live = playEpisode(11)
+    var config = live.config
+    config.players = @[]
+    for name in live.names:
+      config.players.add(PlayerConfig(name: name))
+    let derived = replayMatch(config, live.events)[^1].resultsJson()
+    let recorded = live.resultsJson()
+    for key, value in recorded.pairs:
+      if key == "names":
+        continue
+      check $derived[key] == $value
+    for index, name in live.names:
+      check derived["names"][index].getStr() == name
+
   test "a deadline ending settles the replayed sim":
     var live = initSim(fixtureConfig(seed = 8))
     for turn in 0 ..< 4:

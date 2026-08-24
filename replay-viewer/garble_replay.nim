@@ -36,8 +36,11 @@ proc garLoadReplay(data: ptr uint8, length: cint): cint
     for node in replay["events"]:
       events.add(eventFromJson(node))
     var states = newJArray()
-    for frame in replayMatch(config, events):
+    let frames = replayMatch(config, events)
+    for frame in frames:
       states.add(frame.tableStateJson())
+    ## The endcard reads the LAST re-derived frame, like every other
+    ## readout; the results block recorded in the file is not drawn.
     payload = $ %*{
       "type": "replay",
       "protocol": replay{"protocol"}.getStr("garble.replay.v1"),
@@ -45,7 +48,7 @@ proc garLoadReplay(data: ptr uint8, length: cint): cint
       "policyNames": replay{"policyNames"},
       "config": replay["config"],
       "events": replay["events"],
-      "results": replay{"results"},
+      "results": frames[^1].resultsJson(),
       "states": states
     }
     return 1

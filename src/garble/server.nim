@@ -202,11 +202,17 @@ proc configFromReplay*(payload: JsonNode): GameConfig =
   for name in payload["names"]:
     result.players.add(PlayerConfig(name: name.getStr()))
 
-proc statesFromEvents(config: GameConfig, events: seq[GameEvent]): JsonNode =
-  ## One table-state object per event prefix, for scrubbing replays.
-  result = newJArray()
-  for frame in replayMatch(config, events):
-    result.add(frame.tableStateJson())
+proc derivedFrames(config: GameConfig, events: seq[GameEvent]):
+    tuple[states: JsonNode, results: JsonNode] =
+  ## One table-state object per event prefix, for scrubbing replays, plus
+  ## the results of the LAST re-derived frame. The endcard reads that, like
+  ## every other readout, rather than the recording that rode along in the
+  ## file — one re-derivation, one source of truth.
+  result.states = newJArray()
+  let frames = replayMatch(config, events)
+  for frame in frames:
+    result.states.add(frame.tableStateJson())
+  result.results = frames[^1].resultsJson()
 
 proc finishEpisode(runtimeConfig: RuntimeConfig) =
   var results: JsonNode
@@ -573,6 +579,7 @@ proc runReplayServer*(runtimeConfig: RuntimeConfig) =
   var events: seq[GameEvent]
   for node in payload["events"]:
     events.add(eventFromJson(node))
+  let derived = derivedFrames(config, events)
   var enriched = %*{
     "type": "replay",
     "protocol": payload{"protocol"}.getStr("garble.replay.v1"),
@@ -580,8 +587,8 @@ proc runReplayServer*(runtimeConfig: RuntimeConfig) =
     "policyNames": payload{"policyNames"},
     "config": payload["config"],
     "events": payload["events"],
-    "results": payload{"results"},
-    "states": statesFromEvents(config, events)
+    "results": derived.results,
+    "states": derived.states
   }
   replayPayloadGlobal = $enriched
 
