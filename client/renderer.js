@@ -110,18 +110,21 @@
     var plot = { x: 8, y: rect.y + 5 * hud, w: rect.w - labelW - 16,
       h: rect.h - 10 * hud };
 
-    if (!layout.compact && curve.length > 1 && plot.w > 40) {
-      // The published base curve, as a paper sparkline over every turn.
-      ctx.beginPath();
-      for (var i = 0; i < curve.length; i++) {
-        var px = plot.x + plot.w * (i / Math.max(curve.length - 1, 1));
-        var py = plot.y + plot.h * (1 - curve[i]);
-        if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+    if (curve.length > 1 && plot.w > 40) {
+      if (!layout.compact) {
+        // The published base curve, as a paper sparkline over every turn.
+        ctx.beginPath();
+        for (var i = 0; i < curve.length; i++) {
+          var px = plot.x + plot.w * (i / Math.max(curve.length - 1, 1));
+          var py = plot.y + plot.h * (1 - curve[i]);
+          if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+        }
+        ctx.strokeStyle = "rgba(242, 232, 216, 0.45)";
+        ctx.lineWidth = 1.5;
+        ctx.stroke();
       }
-      ctx.strokeStyle = "rgba(242, 232, 216, 0.45)";
-      ctx.lineWidth = 1.5;
-      ctx.stroke();
-      // The live turn as a filled amber column.
+      // The live turn as a filled amber column. Below 560 px the sparkline
+      // drops away and this column plus the band word ARE the meter.
       var turn = typeof view.turn === "number" && view.turn >= 0 ?
         view.turn : 0;
       var colX = plot.x + plot.w * (turn / Math.max(curve.length - 1, 1));
