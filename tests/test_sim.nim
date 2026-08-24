@@ -145,6 +145,14 @@ suite "airtime":
     check event.ticket == -1
     check sim.tickets.len == 0
     check sim.airtime[0] == 0
+    ## An empty meter is silent whatever the seat offered — including
+    ## nothing at all — so the flag re-derives from the meter on replay.
+    sim.applySay(1, Radio, "", "", scripted = true)
+    check not sim.events[^1].silent
+    sim.airtime[2] = 0
+    sim.applySay(2, Radio, "", "", scripted = true)
+    check sim.events[^1].silent
+    check sim.events[^1].text.len == 0
 
   test "a confirm always costs 40 and is never blocked":
     var sim = initSim(fixtureConfig(seed = 3))

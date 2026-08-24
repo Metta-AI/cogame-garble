@@ -432,7 +432,10 @@ proc applySay*(sim: var Sim, seat, channel: int, text, notes: string,
   var silent = false
   var clipped = false
   if sim.airtime[seat] <= 0:
-    silent = line.len > 0
+    ## The meter is empty: nothing goes out at all, whatever was offered.
+    ## The flag is a property of the METER, not of the text, so it is
+    ## re-derivable on replay, where the recorded text is already "".
+    silent = true
     line = ""
   elif line.runeLen > sim.airtime[seat]:
     line = clipRunes(line, sim.airtime[seat])
