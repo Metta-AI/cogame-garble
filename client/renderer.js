@@ -211,6 +211,16 @@
     return damage;
   }
 
+  // How many words the channel damaged across every listener of one
+  // transmission — the crackle count for that say.
+  function garbledIn(entries) {
+    var total = 0;
+    (entries || []).forEach(function (entry) {
+      total += damageOf(entry.words);
+    });
+    return total;
+  }
+
   function drawWordRow(ctx, words, x, y, maxWidth, size, inkColor, ghost) {
     // One word per cell: a clean word in ink, a dropped or blanked word as a
     // red blank mark, a swapped word in red under a red rule with the said
@@ -1139,6 +1149,9 @@
     var ctxAudio = null;
     var gain = null;
     var source = null;
+    var master = null;
+    var buffer = null;
+    var scheduled = [];
     var on = false;
     var broken = false;
 
@@ -1155,7 +1168,7 @@
       if (!Ctor) throw new Error("no AudioContext");
       ctxAudio = new Ctor();
       var seconds = 2;
-      var buffer = ctxAudio.createBuffer(1, ctxAudio.sampleRate * seconds,
+      buffer = ctxAudio.createBuffer(1, ctxAudio.sampleRate * seconds,
         ctxAudio.sampleRate);
       var data = buffer.getChannelData(0);
       var seed = 12345;
@@ -1171,7 +1184,7 @@
       band.frequency.value = 1800;
       gain = ctxAudio.createGain();
       gain.gain.value = 0;
-      var master = ctxAudio.createGain();
+      master = ctxAudio.createGain();
       master.gain.value = 0.2;
       var comp = ctxAudio.createDynamicsCompressor();
       source.connect(band);
@@ -1182,6 +1195,44 @@
       source.start();
     }
 
+    // Every crackle node is remembered until it ends, so a seek can cancel
+    // the ones still scheduled (design note, Audio).
+    function cancel() {
+      scheduled.forEach(function (node) {
+        try { node.stop(); } catch (ignore) {}
+        try { node.disconnect(); } catch (ignore) {}
+      });
+      scheduled = [];
+    }
+
+    // A short bandpassed pop per garbled word, fired as the word row lands.
+    function crackle(count) {
+      if (broken || !on || !ctxAudio || !buffer || !master) return;
+      var bursts = Math.max(0, Math.min(6, Math.round(count || 0)));
+      if (!bursts) return;
+      scheduled = scheduled.filter(function (node) { return !node.spent; });
+      try {
+        for (var i = 0; i < bursts; i++) {
+          var src = ctxAudio.createBufferSource();
+          src.buffer = buffer;
+          var env = ctxAudio.createGain();
+          var at = ctxAudio.currentTime + 0.02 + i * 0.09;
+          env.gain.setValueAtTime(0.0001, at);
+          env.gain.exponentialRampToValueAtTime(0.16, at + 0.008);
+          env.gain.exponentialRampToValueAtTime(0.0001, at + 0.06);
+          src.connect(env);
+          env.connect(master);
+          src.onended = function () { this.spent = true; };
+          src.start(at, i * 0.13, 0.07);
+          scheduled.push(src);
+        }
+      } catch (error) {
+        broken = true;
+        on = false;
+        label();
+      }
+    }
+
     if (button) {
       button.onclick = function () {
         if (broken) return;
@@ -1190,6 +1241,7 @@
           on = !on;
           if (ctxAudio.state === "suspended") ctxAudio.resume();
           if (gain) gain.gain.value = on ? gain.gain.value : 0;
+          if (!on) cancel();
         } catch (error) {
           broken = true;
           on = false;
@@ -1201,10 +1253,13 @@
     }
 
     return {
+      // 0.0 through the whole CLEAR band, 0.18 at STORM and above, linear
+      // between — the level tracks the meter, and a clear channel is silent.
       level: function (interference) {
         if (broken || !on || !gain || !ctxAudio) return;
         try {
-          var target = Math.max(0, Math.min(0.18, interference * 0.19));
+          var target = Math.max(0, Math.min(0.18,
+            ((interference || 0) - 0.25) / 0.5 * 0.18));
           gain.gain.value = target;
         } catch (error) {
           broken = true;
@@ -1212,8 +1267,11 @@
           label();
         }
       },
+      crackle: crackle,
+      cancel: cancel,
       stop: function () {
         if (broken || !gain) return;
+        cancel();
         try { gain.gain.value = 0; } catch (error) { broken = true; }
       }
     };
@@ -1261,6 +1319,7 @@
       var noise = makeStatic(options.staticButton ||
         document.getElementById("staticbtn"));
       var heardBySay = {};
+      var crackledUpTo = 0;
       var scheme = location.protocol === "https:" ? "wss://" : "ws://";
       var url = scheme + location.host + options.wsPath;
 
@@ -1304,6 +1363,13 @@
               updateScorebug(options.scorebug, latest, nameMap);
               updateLegend(latest);
               noise.level(latest.interference || 0);
+              var all = latest.events || [];
+              for (var e = crackledUpTo; e < all.length; e++) {
+                if (all[e].kind === "say" && !all[e].silent) {
+                  noise.crackle(garbledIn(heardBySay[e]));
+                }
+              }
+              crackledUpTo = all.length;
             }
             if (data.type === "final") {
               updateEndscreen(options.endscreen, data, true, nameMap);
@@ -1403,6 +1469,14 @@
         updateScorebug(options.scorebug, state, nameMap);
         updateLegend(state);
         noise.level(state.interference || 0);
+        // A seek cancels every scheduled crackle; playing through one more
+        // transmission fires one per garbled word as the row is drawn.
+        var played = index > 0 ? events[index - 1] : null;
+        if (jumped) {
+          noise.cancel();
+        } else if (played && played.kind === "say" && !played.silent) {
+          noise.crackle(garbledIn(heardBySay[index - 1]));
+        }
         // Every seek dismisses the endcard: updateEndscreen's first
         // statement toggles the class off whenever `show` is false.
         updateEndscreen(options.endscreen, payload.results,
