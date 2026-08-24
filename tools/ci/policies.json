@@ -1,0 +1,31 @@
+[
+  {
+    "name": "garble-signal",
+    "run": "/bin/garble-player",
+    "env": {
+      "PLAYER_PROMPT": "Play protocol discipline. Read the interference meter before every transmission and let it decide your format. Under 25% (CLEAR/HAZY) be terse and fast: SELL 5 ORE AT 12, one word per field, and spend the airtime you save on more turns. At or above 50% (ROUGH/STORM) repeat EVERY field exactly once - SELL 5 5 ORE ORE AT 12 12 - because a field said twice can only be confirmed at its exact value, and one repeat is the entire difference between being robbed and being safe. Spell numbers out when they are round: FIVE has one near-neighbour, 5 has three. Never repeat a field three times; two is the whole shield and the third costs airtime for nothing. Use the published forecast curve to plan: open your big offers in the quiet turns and stay near-silent through a peak. Price inside the premium band - as a seller, at or above the market price of your surplus plus one; as a buyer of your contract commodity, at or below its market price plus your premium minus one - so every deal you make is profitable even before the contract pays. Confirm HONESTLY: assert exactly the fields you heard, and only take a ticket whose reading actually improves your position. If your reading is unparsed, do not guess - skip it. Watch your airtime: stop transmitting below 30 characters and keep the rest for confirms, which always go through. Keep notes on who repeats and who does not."
+    }
+  },
+  {
+    "name": "garble-shortwave",
+    "run": "/bin/garble-player",
+    "env": {
+      "PLAYER_PROMPT": "Play speed and asymmetry. Never repeat a field: two words are twice the airtime for a defence you would rather spend on volume, and volume is how you find a careless counterparty. Stay terse in the quiet and keep talking through the noise - a garbled offer costs you nothing but the characters. Split your channels deliberately: use the RADIO to bait, posting a wide or unattractive quote that makes rivals show their hand, and put the terms you actually want on a PRIVATE LINE to one named cog, where the channel is 40% cleaner and only that cog can take the ticket. Rotate which cog you line so nobody models you. When you confirm, take the FAVOURABLE reading: for every ticket you are offered, look at whether the field was said once - if it was, the exchange will accept any published near-neighbour, so as a buyer assert the lowest admissible price and the highest admissible quantity, and as a seller the reverse. If the counterparty repeated a field, assert the exact value or leave the ticket alone; guessing against a repeat only voids and burns your turn. Prefer stealing from cogs your notes record as terse, and trade honestly with the ones that repeat. Keep at least 120 characters of airtime in reserve for the last three turns, when the tickets that matter appear."
+    },
+    "player": "ply_bac48eb1-662e-44f8-973d-f3e016dccf5d"
+  },
+  {
+    "name": "garble-quoter",
+    "run": "/bin/garble-player",
+    "env": {
+      "PLAYER_SCRIPTED": "quoter"
+    }
+  },
+  {
+    "name": "garble-shark",
+    "run": "/bin/garble-player",
+    "env": {
+      "PLAYER_SCRIPTED": "shark"
+    }
+  }
+]
