@@ -323,8 +323,10 @@ suite "settlement":
     check sim.cash[1] == 120
 
   test "cash and units never go negative over random confirm traffic":
+    ## 500 random confirm sequences, as the note's test list asks: 500
+    ## episodes, each a fresh seed with a fresh random stream of confirms.
     var rng = initRand(4242)
-    for episode in 0 ..< 20:
+    for episode in 0 ..< 500:
       var sim = initSim(fixtureConfig(seed = episode))
       for turn in 0 ..< 12:
         sim.beginTurn()
@@ -408,6 +410,28 @@ suite "scoring":
     check sim.portfolio(seat) == expected
     check abs(sim.score(seat) -
       sim.portfolio(seat).float / sim.holdValue(seat).float) < 1e-9
+
+  test "selling the contract commodity below price lowers the score":
+    var sim = initSim(fixtureConfig(seed = 3))
+    let commodity = sim.dem[1]
+    ## seat 1 is endowed with a stock of the commodity its contract pays
+    ## for — in its starting position too, so `hold` prices it in — and then
+    ## sells five of them for one credit each.
+    sim.units[1][commodity] += 10
+    sim.startUnits[1][commodity] += 10
+    check sim.score(1) == 1.0
+    sim.beginTurn()
+    var texts = quietTexts()
+    texts[1] = "SELL 5 " & Commodities[commodity] & " AT 1"
+    sim.sayAll(texts)
+    sim.endTurn()
+    sim.beginTurn()
+    sim.sayAll(quietTexts())
+    sim.applyConfirm(0, 1, sdSell, 5, commodity, 1, scripted = true)
+    check sim.events[^1].kind == evDeal
+    check sim.events[^1].fill == 5
+    sim.endTurn()
+    check sim.score(1) < 1.0
 
   test "buying the contract commodity cheaply lifts the score above 1.0":
     var sim = initSim(fixtureConfig(seed = 3))
@@ -560,6 +584,18 @@ suite "replay derivation":
           tampered[index].fill += 1
         else:
           tampered[index].prices[0] += 1
+      check touched
+      expect GarbleError:
+        discard replayMatch(live.config, tampered)
+    block tamperedInterference:
+      ## the note's list names interference OR a price on the turn event
+      var tampered = live.events
+      var touched = false
+      for index in 0 ..< tampered.len:
+        if tampered[index].kind != evTurn or touched:
+          continue
+        touched = true
+        tampered[index].interference += 0.05
       check touched
       expect GarbleError:
         discard replayMatch(live.config, tampered)
