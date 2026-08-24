@@ -96,9 +96,11 @@ metered in characters, the market walks every turn, and portfolio value at the h
   `dem[s]` it holds at the horizon, up to `quota[s] = 12 + rng.rand(7)` (12…19) units. Beyond the
   quota the units are worth only the market price. **A seat's own contract is private**; nobody else
   learns its demand commodity, its premium or its quota except by inference from what it says.
-- Every draw above comes from **one** RNG stream at `initSim`, in this order: aliases, prices,
-  surplus/demand deal, premiums, quotas, interference phase, burst table. `seed` alone reproduces
-  all of it.
+- Every draw above comes from the **seed**, through two seeded streams and nothing else: the
+  aliases from `tableNames`' own stream (`initRand(seed * 6779 + 31)`, the starter's shape, because
+  the aliases are drawn before a `Sim` exists), and everything else from one stream at `initSim`
+  (`initRand(seed * 7919 + 17)`) in this order: prices, surplus/demand deal, premiums, quotas,
+  interference phase, burst table. `seed` alone reproduces all of it.
 
 ### The wire — the exact scanner, lexicon and noise model
 
