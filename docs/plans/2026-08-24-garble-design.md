@@ -907,8 +907,9 @@ assertion on the copied `static_replay.js` is kept.
   `/* ---------- garble additions ---------- */`; no existing rule is edited.
 - **`client/replay_broadcast.html` is the starter's page with a game block appended.** It *is*
   `cogame-babel/client/replay.html`, with (a) the identifier renames a fork requires —
-  `BabelRenderer` → `GarbleRenderer`, the `<title>`, and the `#wordmark` text `BA<span>BEL` →
-  `GAR<span>BLE` — (b) **one inserted line**,
+  `BabelRenderer` → `GarbleRenderer`, the `<title>`, the `#wordmark` text `BA<span>BEL` →
+  `GAR<span>BLE`, and the `#clock` placeholder `ROUND 0` → `TURN 0` (Garble counts turns, and the
+  renderer overwrites it on the first frame anyway) — (b) **one inserted line**,
   `<script src="/client/chrome_common.js"></script>` immediately *before* the starter's
   `<script src="/client/renderer.js">` (the game block reads `window.GarbleChrome` lazily inside
   functions, but the chrome module must exist before the inline bootstrap calls `bindFeedToggle`),
