@@ -275,7 +275,7 @@ proc sayLine(sim: Sim, seat: int, decision: Decision): string =
      else: "LINE\u2192" & sim.names[decision.channel]) &
     ": \"" & decision.text & "\""
 
-proc runGame(runtimeConfig: RuntimeConfig) {.gcsafe.} =
+proc playEpisode(runtimeConfig: RuntimeConfig) {.gcsafe.} =
   {.gcsafe.}:
     let config = state.config
     let gameStart = epochTime()
@@ -413,6 +413,28 @@ proc runGame(runtimeConfig: RuntimeConfig) {.gcsafe.} =
     if config.turnDelayMs > 0:
       sleep(config.turnDelayMs)
     finishEpisode(runtimeConfig)
+
+proc runGame(runtimeConfig: RuntimeConfig) {.gcsafe.} =
+  ## The game thread is the only thing that ever writes an artifact, and the
+  ## HTTP thread serves /healthz forever, so a thread that dies mid-episode
+  ## would leave a container that looks alive and writes NOTHING until the
+  ## platform kills it. A short scored episode always beats a silent death:
+  ## log, settle what was played, and write it.
+  {.gcsafe.}:
+    try:
+      playEpisode(runtimeConfig)
+    except CatchableError as error:
+      echo "garble: the game thread failed (", error.msg,
+        "); settling what was played"
+      try:
+        withLock stateLock:
+          if not state.sim.done:
+            state.sim.endEarly()
+            state.broadcastLocked()
+        finishEpisode(runtimeConfig)
+      except CatchableError as inner:
+        echo "garble: could not write the artifacts: ", inner.msg
+        quit(1)
 
 var gameThread: Thread[RuntimeConfig]
 
