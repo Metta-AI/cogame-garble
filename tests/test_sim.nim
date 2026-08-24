@@ -595,6 +595,51 @@ suite "replay derivation":
       expect GarbleError:
         discard replayMatch(live.config, tampered)
 
+  test "a say's silent flag, said text and terms are re-derived":
+    ## Seat 0 talks its whole meter away: turn 5 is clipped, turns 6 and 7
+    ## are silent — all of it re-derivable, because the meter is.
+    var live = initSim(fixtureConfig(seed = 5))
+    let long = repeat("A", MaxTextRunes)
+    for turn in 0 ..< 8:
+      live.beginTurn()
+      live.applySay(0, Radio, long,
+        (if turn == 0: "note one" else: ""), scripted = true)
+      for seat in 1 ..< Seats:
+        live.applySay(seat, Radio,
+          "SELL 2 " & Commodities[live.sur[seat]] & " AT 7", "",
+          scripted = true)
+      live.endTurn()
+    live.endEarly()
+    var silentSay = -1
+    var clippedSay = -1
+    var termsSay = -1
+    for index, event in live.events:
+      if event.kind != evSay:
+        continue
+      if event.silent and silentSay < 0: silentSay = index
+      if event.clipped and clippedSay < 0: clippedSay = index
+      if event.hasTerms and termsSay < 0: termsSay = index
+    check silentSay >= 0
+    check clippedSay >= 0
+    check termsSay >= 0
+    ## the honest log replays
+    check replayMatch(live.config, live.events).len == live.events.len + 1
+    block forgedSilence:
+      var tampered = live.events
+      tampered[silentSay].silent = false
+      expect GarbleError:
+        discard replayMatch(live.config, tampered)
+    block forgedTerms:
+      var tampered = live.events
+      tampered[termsSay].price += 1
+      expect GarbleError:
+        discard replayMatch(live.config, tampered)
+    block forgedClip:
+      var tampered = live.events
+      tampered[termsSay].clipped = true
+      expect GarbleError:
+        discard replayMatch(live.config, tampered)
+
   test "a deadline ending settles the replayed sim":
     var live = initSim(fixtureConfig(seed = 8))
     for turn in 0 ..< 4:

@@ -960,8 +960,23 @@ proc replayMatch*(config: GameConfig, events: seq[GameEvent]): seq[Sim] =
       sim.applySay(event.seat, event.channel, event.text, event.notes,
         event.scripted)
       let logged = sim.events[^1]
+      ## `clipped` is the one recorded say field that cannot be re-derived:
+      ## the replay is handed the ALREADY clipped text, so the clip never
+      ## fires a second time. It is checked for consistency instead — a
+      ## clipped transmission is exactly the one that spent the meter to its
+      ## last rune. Everything else the say event records is compared against
+      ## the re-derivation.
+      let clipConsistent = (not logged.clipped) and
+        (not event.clipped or (logged.cost > 0 and logged.airtimeLeft == 0))
       if logged.ticket != event.ticket or logged.cost != event.cost or
-          logged.hasTerms != event.hasTerms:
+          logged.hasTerms != event.hasTerms or logged.text != event.text or
+          logged.notes != event.notes or logged.silent != event.silent or
+          logged.airtimeLeft != event.airtimeLeft or
+          logged.channel != event.channel or not clipConsistent or
+          (logged.hasTerms and (logged.side != event.side or
+            logged.qty != event.qty or logged.commodity != event.commodity or
+            logged.price != event.price or logged.kQty != event.kQty or
+            logged.kCom != event.kCom or logged.kPrice != event.kPrice)):
         raise newException(GarbleError,
           "say by seat " & $event.seat & " does not match the rules")
       pending = 0
