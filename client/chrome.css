@@ -458,10 +458,46 @@ body.feed-collapsed #feed { display: none; }
 }
 .plate-pip.spent { background: rgba(242, 232, 216, 0.18); }
 
+/* Airtime pips must COMPRESS, not spill. `.plate-pips { flex: none }` (and a
+   `flex: none` pip) gives the strip a hard 117 px intrinsic width, which is
+   wider than the leftover room in a 1/5 grid column once the name, portfolio,
+   CREDITS label and ratio have been laid out -- so every plate overflowed to
+   the right and painted its pips over the NEXT seat's name (the last seat ran
+   off the frame entirely). Letting the strip and each pip shrink keeps all 12
+   pips readable at any width; `overflow: hidden` on the plate is the backstop
+   so a plate can never bleed into its neighbour again. */
+.plate { overflow: hidden; }
+#scorebug { overflow: hidden; }
+.plate-pips {
+  /* basis 0: the strip claims only what the plate has LEFT OVER after the
+     name, so a long name never has to ellipsize to make room for decoration. */
+  flex: 1 1 0;
+  min-width: 0;
+  gap: 2px;
+  overflow: hidden;
+  justify-content: flex-start;
+}
+.plate-pip { flex: 0 1 7px; min-width: 2px; }
+.plate-name { flex: 0 1 auto; }
+
+/* Five plates share the width, so each seat's column is stage/5. Below the
+   widths here the optional parts no longer fit beside the name, the score and
+   the ratio -- and an item that does not fit is an item drawn over the next
+   seat, not an item politely omitted. Shed them in order of least information
+   lost: the CREDITS caption first (the number above it is already captioned by
+   the wordmark row), then the airtime pips. The featured-match iframe on
+   softmax.com is 746 px, which is why the pip cut-off sits above it. */
+@media (max-width: 1100px) { .plate-label { display: none; } }
+@media (max-width: 900px) { .plate-pips { display: none; } }
+
 @media (max-width: 640px) {
   #scorebug { gap: 6px; padding: 4px 8px 6px; }
   .plate-label { display: none; }
   .plate-pips { display: none; }
+  /* At phone width five plates share ~68 px each: name plus portfolio is
+     already the whole column, and the ratio was the last thing still drawn
+     past it. It is on the endcard. */
+  .plate-ratio { display: none; }
   .plate-name { font-size: 12px; }
   .plate-score { font-size: 14px; }
 }
