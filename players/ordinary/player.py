@@ -81,6 +81,7 @@ def main() -> None:
     register = json.dumps({"type": "prompt", "prompt": os.environ.get("PLAYER_PROMPT", ""),
                            "scripted": False, "external": True})
     socket = websocket.create_connection(url, timeout=60)
+    socket.settimeout(None)
     socket.send(register)
     calls = 0
     pending: dict[int, tuple[dict, dict, str]] = {}
