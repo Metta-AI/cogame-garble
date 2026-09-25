@@ -275,6 +275,24 @@ proc scriptedAction*(sim: Sim, seat: int, kind: ScriptKind,
   result.qty = clamp(result.qty, 0, MaxQty)
   result.price = clamp(result.price, 0, MaxPrice)
 
+proc decisionJson*(sim: Sim, decision: Decision): JsonNode =
+  ## Serialize a complete normal player action, including its optional confirm.
+  result = %*{
+    "channel": (if decision.channel == Radio: "RADIO"
+      else: sim.names[decision.channel]),
+    "text": decision.text,
+    "notes": decision.notes,
+    "confirm": newJNull()
+  }
+  if decision.hasConfirm:
+    result["confirm"] = %*{
+      "ticket": decision.ticket,
+      "side": $decision.side,
+      "commodity": Commodities[decision.commodity],
+      "qty": decision.qty,
+      "price": decision.price
+    }
+
 # ---- Prompt building --------------------------------------------------------
 
 proc channelLabel(sim: Sim, channel: int): string =

@@ -51,21 +51,7 @@ when isMainModule:
       for seat in 0 ..< Seats:
         let teacher = scriptedAction(sim, seat,
           if seat mod 2 == 0: skQuoter else: skShark)
-        var completion = %*{
-          "channel": (if teacher.channel == Radio: "RADIO"
-            else: sim.names[teacher.channel]),
-          "text": teacher.text,
-          "notes": teacher.notes,
-          "confirm": newJNull()
-        }
-        if teacher.hasConfirm:
-          completion["confirm"] = %*{
-            "ticket": teacher.ticket,
-            "side": $teacher.side,
-            "commodity": Commodities[teacher.commodity],
-            "qty": teacher.qty,
-            "price": teacher.price
-          }
+        let completion = decisionJson(sim, teacher)
         let parsed = parseDecision(sim, seat, completion)
         doAssert parsed == teacher
         decisions.add(parsed)

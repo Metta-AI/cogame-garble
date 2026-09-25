@@ -31,13 +31,13 @@ confirm. So the whole game is the tradeoff between protocol robustness and
 speed, plus strategic mishearing: you may confirm the version that favours
 you, and your counterparty's only defence is a tighter protocol.
 
-**The game is LLM-driven and a policy is just a prompt.** Every turn the
-game server sends each seat's policy prompt plus its inventory, its private
-contract, the interference forecast, its own heard traffic, the tickets it
-may confirm (with the ready-made confirm JSON for each) and the public deal
-tape to Claude — all five seats in **one parallel batch** — and Claude
-answers with a transmission, an optional confirm, and new private notes.
-Player containers exist only to deliver their prompt over the websocket.
+**Policies act through the player WebSocket.** A player can register a prompt
+for the game-hosted Claude client, or receive its private turn prompt and send
+a complete action. The prompt includes its inventory, private contract,
+interference forecast, heard traffic, confirmable tickets, and public deal tape.
+The game validates player actions and applies them in seat order. An ordinary
+player with canned, Jev, and trained-adapter backends is in
+[`players/ordinary/`](players/ordinary/README.md).
 Two built-in **scripted baselines** — `quoter`, the honest repeater, and
 `shark`, the terse opportunist — play any seat that registers as scripted,
 and every seat when no LLM credentials are available, so episodes (and
@@ -135,3 +135,8 @@ uv run coworld upload-policy <garble image> --name my-garble \
 Or field a scripted baseline: same image,
 `--env PLAYER_SCRIPTED=quoter` (the honest repeater) or
 `--env PLAYER_SCRIPTED=shark` (the terse opportunist).
+
+To field a policy that makes its own decisions, package
+[`players/ordinary/`](players/ordinary/README.md) and use its player image.
+It sends actions through the same player socket; the game retains validation,
+effects, scoring, and replay.

@@ -9,17 +9,20 @@
 ##   GET /client/chrome_common.js    - the inherited broadcast chrome
 ##   GET /client/chrome.css          - the inherited broadcast styling
 ##   GET /client/assets/<name>       - sprites and fonts
-##   WS  /player?slot=N&token=T      - player protocol (prompt delivery)
+##   WS  /player?slot=N&token=T      - player protocol
 ##   WS  /global                     - spectator snapshots
 ##   WS  /replay                     - replay payload (replay mode)
 ##
-## Player protocol (garble.player.v1), all JSON text frames:
+## Player protocol (garble.player.v2), all JSON text frames:
 ##   game -> player: {"type":"welcome","slot":N,"name":...,"turns":int}
 ##                   {"type":"state",...} after every event, redacted to the
 ##                   seat's own tallies (Garble has real hidden information)
 ##                   {"type":"final","scores":[...],"portfolio":[...]}
 ##   player -> game: {"type":"prompt","prompt":"...","scripted":bool,
-##                    "baseline":"quoter"|"shark"} (prompt max 4000 runes)
+##                    "baseline":"quoter"|"shark","external":bool}
+##                   {"type":"decision","turn":N,"action":{...}}
+##   game -> external player: {"type":"turn","turn":N,"system":str,
+##                            "user":str,"candidates":[...]}
 
 import
   std/[json, locks, os, sets, strutils, tables, times, unicode],
@@ -48,6 +51,9 @@ type
     sim: Sim
     prompts: seq[string]
     scripted: seq[ScriptKind]
+    external: seq[bool]
+    pendingTurn: int
+    pendingDecisions: Table[int, JsonNode]
     playerSockets: Table[int, WebSocket]
     socketSlots: Table[WebSocket, int]
     globalSockets: HashSet[WebSocket]
@@ -317,9 +323,6 @@ proc playEpisode(runtimeConfig: RuntimeConfig) {.gcsafe.} =
         (if hostedTimeout.len > 0: "from env" else: "assumed"),
         "); playing until ", (timeoutSeconds * PlayBudgetFraction).int, "s"
 
-    var seats: seq[int]
-    for seat in 0 ..< Seats:
-      seats.add(seat)
     var callsLastTurn = 0
     var lastBatchStart = 0.0
 
@@ -330,6 +333,7 @@ proc playEpisode(runtimeConfig: RuntimeConfig) {.gcsafe.} =
       var simCopy: Sim
       var prompts: seq[string]
       var scripted: seq[ScriptKind]
+      var external: seq[bool]
       var stop = false
       withLock stateLock:
         if state.sim.done:
@@ -350,6 +354,7 @@ proc playEpisode(runtimeConfig: RuntimeConfig) {.gcsafe.} =
           simCopy = state.sim
           prompts = state.prompts
           scripted = state.scripted
+          external = state.external
       if stop:
         break
 
@@ -368,36 +373,89 @@ proc playEpisode(runtimeConfig: RuntimeConfig) {.gcsafe.} =
       var effective = config.llmTimeoutSeconds
       if playDeadline > 0.0:
         effective = min(effective, max(5, int(playDeadline - epochTime())))
-      let decisions = client.decideAll(simCopy, seats, prompts, scripted,
-        effective)
-      callsLastTurn = client.callsIssued
+      let decisionDeadline = epochTime() + effective.float
+      var modelSeats, externalSeats, waitingSeats: seq[int]
+      withLock stateLock:
+        state.pendingTurn = simCopy.turn
+        state.pendingDecisions.clear()
+        for seat in 0 ..< Seats:
+          if not external[seat]:
+            modelSeats.add(seat)
+            continue
+          externalSeats.add(seat)
+          if state.playerSockets.hasKey(seat):
+            let candidates = %*[
+              {"id": "quoter", "action": decisionJson(simCopy,
+                scriptedAction(simCopy, seat, skQuoter))},
+              {"id": "shark", "action": decisionJson(simCopy,
+                scriptedAction(simCopy, seat, skShark))}
+            ]
+            state.playerSockets[seat].send($ %*{
+              "type": "turn",
+              "turn": simCopy.turn,
+              "system": systemPrompt(simCopy, seat),
+              "user": userPrompt(simCopy, seat, prompts[seat]),
+              "candidates": candidates
+            })
+            waitingSeats.add(seat)
+      let modelDecisions = client.decideAll(simCopy, modelSeats, prompts,
+        scripted, effective)
+      callsLastTurn = client.callsIssued + waitingSeats.len
+      while waitingSeats.len > 0 and epochTime() < decisionDeadline:
+        var received = 0
+        withLock stateLock:
+          for seat in waitingSeats:
+            if state.pendingDecisions.hasKey(seat):
+              received.inc
+        if received == waitingSeats.len:
+          break
+        sleep(20)
+
+      var decisions = newSeq[Decision](Seats)
+      var wasScripted = newSeq[bool](Seats)
+      for index, seat in modelSeats:
+        decisions[seat] = modelDecisions[index]
+        wasScripted[seat] = scripted[seat] != skNone or client.disabled or
+          client.decidedScripted[index]
+      withLock stateLock:
+        for seat in externalSeats:
+          if state.pendingDecisions.hasKey(seat):
+            try:
+              decisions[seat] = parseDecision(simCopy, seat,
+                state.pendingDecisions[seat])
+              continue
+            except GarbleError as error:
+              echo "garble: external seat ", seat, " invalid decision: ",
+                error.msg
+          echo "garble: external seat ", seat, " using scripted fallback"
+          decisions[seat] = scriptedAction(simCopy, seat, skQuoter)
+          wasScripted[seat] = true
+        state.pendingTurn = -1
 
       withLock stateLock:
         ## Transmit, in seat order.
         for seat in 0 ..< Seats:
           let decision = decisions[seat]
-          let wasScripted = scripted[seat] != skNone or client.disabled or
-            client.decidedScripted[seat]
           echo "garble: ", sayLine(state.sim, seat, decision)
           try:
             state.sim.applySay(seat, decision.channel, decision.text,
-              decision.notes, wasScripted)
+              decision.notes, wasScripted[seat])
           except GarbleError as error:
             echo "garble: transmission rejected (", error.msg,
               "); using the scripted fallback"
             let fallback = scriptedAction(state.sim, seat, skQuoter)
             state.sim.applySay(seat, fallback.channel, fallback.text, "", true)
+            wasScripted[seat] = true
           state.broadcastLocked()
         ## Confirms, in seat order, after every transmission has landed.
         for seat in 0 ..< Seats:
           let decision = decisions[seat]
           if not decision.hasConfirm:
             continue
-          let wasScripted = scripted[seat] != skNone or client.disabled or
-            client.decidedScripted[seat]
           try:
             state.sim.applyConfirm(seat, decision.ticket, decision.side,
-              decision.qty, decision.commodity, decision.price, wasScripted)
+              decision.qty, decision.commodity, decision.price,
+              wasScripted[seat])
           except GarbleError as error:
             ## An inadmissible confirm is a legal move that voids; only a
             ## malformed one lands here, and it costs the seat its confirm.
@@ -405,6 +463,12 @@ proc playEpisode(runtimeConfig: RuntimeConfig) {.gcsafe.} =
           state.broadcastLocked()
         state.sim.endTurn()
         state.broadcastLocked()
+        for seat in externalSeats:
+          if state.playerSockets.hasKey(seat):
+            state.playerSockets[seat].send($ %*{
+              "type": "decision_result", "turn": simCopy.turn,
+              "accepted": not wasScripted[seat]
+            })
 
       ## Pace so a spectator can read the turn that just landed.
       if config.turnDelayMs > 0:
@@ -507,7 +571,7 @@ proc playerUpgradeHandler(request: Request) {.gcsafe.} =
         state.playerSockets.len, "/", state.config.tokens.len, ")"
       websocket.send($ %*{
         "type": "welcome",
-        "protocol": "garble.player.v1",
+        "protocol": "garble.player.v2",
         "slot": slot,
         "name": state.sim.names[slot],
         "turns": state.config.turns
@@ -560,12 +624,27 @@ proc websocketHandler(
             kind = parseScriptKind(payload{"baseline"}.getStr("quoter"))
             if kind == skNone:
               kind = skQuoter
+          let external = payload{"external"}.getBool(false)
+          if external and kind != skNone:
+            raise newException(GarbleError,
+              "an external player cannot register as scripted")
           withLock stateLock:
             state.prompts[slot] = prompt
             state.scripted[slot] = kind
+            state.external[slot] = external
           echo "garble: slot ", slot, " delivered a prompt (",
             prompt.runeLen, " runes",
-            (if kind != skNone: ", scripted " & $kind else: ""), ")"
+            (if kind != skNone: ", scripted " & $kind
+             elif external: ", external" else: ""), ")"
+        elif payload{"type"}.getStr() == "decision":
+          let turn = payload["turn"].getInt()
+          let action = payload["action"]
+          if action.kind != JObject:
+            raise newException(GarbleError, "decision action must be an object")
+          withLock stateLock:
+            if state.external[slot] and turn == state.pendingTurn and
+                not state.pendingDecisions.hasKey(slot):
+              state.pendingDecisions[slot] = action
       except CatchableError as error:
         echo "garble: ignoring bad player frame: ", error.msg
     of ErrorEvent:
@@ -626,6 +705,9 @@ proc runGameServer*(config: GameConfig, runtimeConfig: RuntimeConfig) =
   state.sim = initSim(config)
   state.prompts = newSeq[string](config.players.len)
   state.scripted = newSeq[ScriptKind](config.players.len)
+  state.external = newSeq[bool](config.players.len)
+  state.pendingTurn = -1
+  state.pendingDecisions = initTable[int, JsonNode]()
   runtimeConfigGlobal = runtimeConfig
 
   let router = buildRouter(replayMode = false)
