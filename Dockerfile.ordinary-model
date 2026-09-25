@@ -6,6 +6,8 @@ RUN pip install --no-cache-dir -r requirements.txt && \
     pip install --no-cache-dir torch==2.9.0 --index-url https://download.pytorch.org/whl/cpu && \
     pip install --no-cache-dir transformers==4.57.1 peft==0.20.0
 COPY players/ordinary/*.py .
+COPY docs/rules.md /player/rules.md
+ENV GARBLE_RULES_FILE=/player/rules.md
 COPY --from=base / /models/base
 COPY --from=adapter / /models/adapter
 

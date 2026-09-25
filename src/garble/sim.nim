@@ -16,11 +16,6 @@ export types, wire
 const
   Seats* = 5
   CommodityCount* = 4
-  ## An episode's whole model-call allowance (one call per seat per turn).
-  ## A hosted episode is killed if it outlives the platform's artifact
-  ## timeout, so `turns` is capped to this at sample time.
-  EpisodeCallBudget* = 120
-  CallsPerTurn* = 5
   ## Total spectator-pacing sleep an episode may spend, in milliseconds.
   PacingBudgetMs* = 60_000
   MaxTextRunes* = 160
@@ -125,14 +120,12 @@ proc tableNames*(players: seq[PlayerConfig], seed: int): seq[string] =
       result.add("Cog " & $(index + 1))
 
 proc sampleEpisode*(config: GameConfig): GameConfig =
-  ## Fits the turn count into one episode's call budget. Idempotent: a
-  ## config that already carries the cap (a replay being re-read) is
-  ## untouched.
+  ## Caps the turn count and spectator pacing. A replay's sampled config is
+  ## left untouched so it replays the exact recorded episode.
   result = config
   if result.sampled:
     return
-  result.turns =
-    max(min(config.turns, EpisodeCallBudget div CallsPerTurn), MinTurns)
+  result.turns = min(config.turns, MaxTurns)
   result.turnDelayMs =
     min(config.turnDelayMs, PacingBudgetMs div max(result.turns, 1))
   result.sampled = true
@@ -336,6 +329,100 @@ proc openTicketsFor*(sim: Sim, seat: int): seq[Ticket] =
   for ticket in sim.tickets:
     if sim.mayConfirm(seat, ticket):
       result.add(ticket)
+
+proc seatDecisionView*(sim: Sim, seat: int): JsonNode =
+  ## Structured private state for any player policy. Heard ticket terms are
+  ## derived for this listener; the offerer's said terms never cross the wire.
+  var prices = newJArray()
+  var previousPrices = newJArray()
+  var units = newJArray()
+  var tickets = newJArray()
+  var forecast = newJArray()
+  var heardTraffic = newJArray()
+  var settledDeals = newJArray()
+  let livePrices = sim.livePrices()
+  let priorPrices = sim.priceRow(max(0, sim.turn - 1))
+  for commodity in 0 ..< CommodityCount:
+    prices.add(%livePrices[commodity])
+    previousPrices.add(%priorPrices[commodity])
+    units.add(%sim.units[seat][commodity])
+  for value in sim.curve:
+    forecast.add(%value)
+  for event in sim.events:
+    if event.kind != evSay or event.seat == seat or event.silent:
+      continue
+    if seat notin sim.recipientsOf(event.seat, event.channel):
+      continue
+    let words = sim.heardFor(seat, event)
+    if words.len == 0 and event.text.len > 0:
+      continue
+    heardTraffic.add(%*{
+      "turn": event.turn,
+      "from": sim.names[event.seat],
+      "channel": (if event.channel == Radio: "RADIO" else: "LINE"),
+      "text": heardText(words)
+    })
+  for deal in sim.deals:
+    settledDeals.add(%*{
+      "ticket": deal.ticket,
+      "turn": deal.turn,
+      "seller": sim.names[deal.seller],
+      "buyer": sim.names[deal.buyer],
+      "commodity": Commodities[deal.commodity],
+      "fill": deal.fill,
+      "price": deal.price,
+      "said_qty": deal.saidQty,
+      "said_commodity": Commodities[deal.saidCommodity],
+      "said_price": deal.saidPrice,
+      "misheard": deal.misheard,
+      "partial": deal.partial
+    })
+  for ticket in sim.openTicketsFor(seat):
+    let heard = sim.heardTermsFor(seat, ticket)
+    var entry = %*{
+      "id": ticket.id,
+      "from": sim.names[ticket.offerer],
+      "channel": (if ticket.channel == Radio: "RADIO" else: "LINE"),
+      "opened_turn": ticket.turn,
+      "expires_turn": ticket.expiry,
+      "heard_text": heardText(sim.heardFor(seat, sim.sayEventFor(ticket))),
+      "heard": newJNull()
+    }
+    if heard.isSome:
+      let terms = heard.get()
+      entry["heard"] = %*{
+        "side": $terms.side,
+        "qty": terms.qty,
+        "commodity": terms.commodity,
+        "price": terms.price,
+        "qty_neighbors": valueNeighbors(terms.qtyWord),
+        "price_neighbors": valueNeighbors(terms.priceWord)
+      }
+    tickets.add(entry)
+  %*{
+    "alias": sim.names[seat],
+    "aliases": sim.names,
+    "turn": sim.turn,
+    "turns": sim.config.turns,
+    "surplus": sim.sur[seat],
+    "demand": sim.dem[seat],
+    "quota": sim.quota[seat],
+    "premium": sim.premium[seat],
+    "units": units,
+    "cash": sim.cash[seat],
+    "airtime": sim.airtime[seat],
+    "prices": prices,
+    "previous_prices": previousPrices,
+    "interference": sim.liveInterference(),
+    "forecast": forecast,
+    "portfolio": sim.portfolioAt(seat, livePrices),
+    "hold_value": sim.holdValue(seat),
+    "score": sim.score(seat),
+    "notes": sim.notes[seat],
+    "heard_traffic": heardTraffic,
+    "settled_deals": settledDeals,
+    "tickets": tickets
+  }
 
 # ---- Play -------------------------------------------------------------------
 

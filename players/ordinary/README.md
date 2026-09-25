@@ -1,6 +1,6 @@
 # Ordinary Garble player
 
-This player receives each seat's private Garble prompt and sends a complete decision through `garble.player.v2`. The game validates the decision, applies transmissions and confirmations, and records the replay. The default policy uses the published `quoter` action. `POC_JEV=1` asks Jev System One to choose between complete `quoter` and `shark` actions. `POC_ADAPTER_DIR` loads a Metta post-training adapter that generates action JSON. The existing prompt and scripted players remain fieldable.
+This player receives each seat's private Garble view and sends a complete decision through `garble.player.v3`. The game validates the decision, applies transmissions and confirmations, and records the replay. The player derives its own `quoter` and `shark` decisions from that view. The default policy uses `quoter`. `POC_JEV=1` asks Jev System One to choose between those complete actions. `POC_ADAPTER_DIR` loads a Metta post-training adapter that generates action JSON. Prompt and scripted players remain fieldable.
 
 Build the local game and player images, then run a mixed roster with a manifest built from `coworld_manifest_template.json`:
 

@@ -125,32 +125,35 @@ suite "the shield is load-bearing":
     check quiet > storm
 
 suite "the fallback path":
-  test "no credentials means every seat is scripted, with no network call":
+  test "player-side baselines match the game fallback without a model":
     for name in ["ANTHROPIC_API_KEY", "ANTHROPIC_API_KEY_URI",
         "AWS_ENDPOINT_URL_BEDROCK_RUNTIME", "AWS_BEARER_TOKEN_BEDROCK"]:
       delEnv(name)
-    let config = fixture(11)
-    let client = newLlmClient(config)
+    let client = newLlmClient(900, "claude-sonnet-5")
     check client.disabled
-    var sim = initSim(config)
-    sim.beginTurn()
-    var seats: seq[int]
-    var prompts: seq[string]
-    var scripted: seq[ScriptKind]
-    for seat in 0 ..< Seats:
-      seats.add(seat)
-      prompts.add("play well")
-      scripted.add(skNone)
-    let started = getMonoTime()
-    let decisions = client.decideAll(sim, seats, prompts, scripted, 25)
-    check (getMonoTime() - started).inMilliseconds < 1000
-    check client.callsIssued == 0
-    check decisions.len == Seats
-    for seat in 0 ..< Seats:
-      check client.decidedScripted[seat]
-      checkLegal(decisions[seat])
-      sim.applySay(seat, decisions[seat].channel, decisions[seat].text,
-        decisions[seat].notes, scripted = true)
+    for seed in [1, 11, 42]:
+      var sim = initSim(fixture(seed))
+      while not sim.done:
+        sim.beginTurn()
+        var decisions: seq[Decision]
+        for seat in 0 ..< Seats:
+          let view = sim.seatDecisionView(seat)
+          let kind = if seat mod 2 == 0: skQuoter else: skShark
+          for candidate in [skQuoter, skShark]:
+            let action = scriptedDecisionFromView(view, candidate)
+            let decision = parseDecision(sim, seat, action)
+            check decision == scriptedAction(sim, seat, candidate)
+            checkLegal(decision)
+          decisions.add(scriptedAction(sim, seat, kind))
+        for seat, decision in decisions:
+          sim.applySay(seat, decision.channel, decision.text,
+            decision.notes, scripted = true)
+        for seat, decision in decisions:
+          if decision.hasConfirm:
+            sim.applyConfirm(seat, decision.ticket, decision.side,
+              decision.qty, decision.commodity, decision.price,
+              scripted = true)
+        sim.endTurn()
 
 suite "reply parsing":
   proc sample(): Sim =
