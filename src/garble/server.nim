@@ -53,7 +53,7 @@ type
     scripted: seq[ScriptKind]
     external: seq[bool]
     pendingTurn: int
-    pendingDecisions: Table[int, JsonNode]
+    pendingDecisions: Table[int, Decision]
     playerSockets: Table[int, WebSocket]
     socketSlots: Table[WebSocket, int]
     globalSockets: HashSet[WebSocket]
@@ -420,13 +420,8 @@ proc playEpisode(runtimeConfig: RuntimeConfig) {.gcsafe.} =
       withLock stateLock:
         for seat in externalSeats:
           if state.pendingDecisions.hasKey(seat):
-            try:
-              decisions[seat] = parseDecision(simCopy, seat,
-                state.pendingDecisions[seat])
-              continue
-            except GarbleError as error:
-              echo "garble: external seat ", seat, " invalid decision: ",
-                error.msg
+            decisions[seat] = state.pendingDecisions[seat]
+            continue
           echo "garble: external seat ", seat, " using scripted fallback"
           decisions[seat] = scriptedAction(simCopy, seat, skQuoter)
           wasScripted[seat] = true
@@ -644,7 +639,8 @@ proc websocketHandler(
           withLock stateLock:
             if state.external[slot] and turn == state.pendingTurn and
                 not state.pendingDecisions.hasKey(slot):
-              state.pendingDecisions[slot] = action
+              state.pendingDecisions[slot] = parseDecision(state.sim, slot,
+                action)
       except CatchableError as error:
         echo "garble: ignoring bad player frame: ", error.msg
     of ErrorEvent:
@@ -707,7 +703,7 @@ proc runGameServer*(config: GameConfig, runtimeConfig: RuntimeConfig) =
   state.scripted = newSeq[ScriptKind](config.players.len)
   state.external = newSeq[bool](config.players.len)
   state.pendingTurn = -1
-  state.pendingDecisions = initTable[int, JsonNode]()
+  state.pendingDecisions = initTable[int, Decision]()
   runtimeConfigGlobal = runtimeConfig
 
   let router = buildRouter(replayMode = false)
