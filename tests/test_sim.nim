@@ -758,20 +758,20 @@ suite "results shape":
     check results["turns"].getInt() <= results["maxTurns"].getInt()
 
 suite "name spaces":
-  test "a prompt carries the seat's alias and no policy display name":
+  test "a private view carries the alias and no policy display name":
     var sim = initSim(fixtureConfig(seed = 11))
     sim.beginTurn()
     sim.sayAll(@["SELL 5 ORE AT 12", "BUY 3 TIN AT 9", "", "", ""])
     sim.endTurn()
     sim.beginTurn()
     for seat in 0 ..< Seats:
-      let system = systemPrompt(sim, seat)
-      let user = userPrompt(sim, seat, "be brief")
+      let system = systemPrompt(sim.names[seat])
+      let view = sim.seatDecisionView(seat)
       check sim.names[seat] in system
-      check sim.names[seat] in user
+      check view["alias"].getStr() == sim.names[seat]
       for other in 0 ..< Seats:
         check sim.config.players[other].name notin system
-        check sim.config.players[other].name notin user
+        check sim.config.players[other].name notin $view
 
   test "a seat never sees another seat's said text, cash or contract":
     var sim = initSim(fixtureConfig(seed = 11))
@@ -786,12 +786,13 @@ suite "name spaces":
     for seat in 0 ..< Seats:
       if seat == 1:
         continue
-      let user = userPrompt(sim, seat, "")
-      check "seat one private note" notin user
-      check ("+" & $sim.premium[1] & " credits per " &
-        Commodities[sim.dem[1]]) notin user or sim.dem[seat] == sim.dem[1]
+      let view = sim.seatDecisionView(seat)
+      check "seat one private note" notin $view
+      check view["premium"].getInt() == sim.premium[seat]
+      check view["cash"].getInt() == sim.cash[seat]
+      check view["demand"].getInt() == sim.dem[seat]
       if seat != 2:
-        check secret notin user
+        check secret notin $view
 
   test "tableNames is deterministic in the seed":
     var players: seq[PlayerConfig]

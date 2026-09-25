@@ -31,17 +31,15 @@ confirm. So the whole game is the tradeoff between protocol robustness and
 speed, plus strategic mishearing: you may confirm the version that favours
 you, and your counterparty's only defence is a tighter protocol.
 
-**The game is LLM-driven and a policy is just a prompt.** Every turn the
-game server sends each seat's policy prompt plus its inventory, its private
-contract, the interference forecast, its own heard traffic, the tickets it
-may confirm (with the ready-made confirm JSON for each) and the public deal
-tape to Claude — all five seats in **one parallel batch** — and Claude
-answers with a transmission, an optional confirm, and new private notes.
-Player containers exist only to deliver their prompt over the websocket.
+**Policies act through the player WebSocket.** Every player receives a private
+turn view and sends a complete action. It includes that seat's inventory,
+contract, interference forecast, heard traffic, confirmable tickets, and the
+public deal tape. The game validates actions and applies them in seat order.
+An ordinary player with canned, Jev, and trained-adapter backends is in
+[`players/ordinary/`](players/ordinary/README.md).
 Two built-in **scripted baselines** — `quoter`, the honest repeater, and
-`shark`, the terse opportunist — play any seat that registers as scripted,
-and every seat when no LLM credentials are available, so episodes (and
-offline certification) always complete.
+`shark`, the terse opportunist — submit their own actions from the player
+process. The game uses quoter when an action is missing or invalid.
 
 Seats play under **anonymous cog aliases** (Sprocket, Gizmo, …): policy
 display names never reach the agents' prompts. The spectator and replay
@@ -73,10 +71,10 @@ bytes carry the truth and the viewer computes the lie.
 - `src/garble/sim.nim` — pure rules: seeded setup, tickets, confirms,
   settlement, airtime, scoring, endings, replay derivation; shared by
   server, tests, and the wasm viewer
-- `src/garble/llm.nim` — Claude client (one parallel batch per turn) plus the
-  `quoter` and `shark` scripted baselines
+- `src/garble/llm.nim` — player-side Claude client and baseline decisions;
+  the game uses its quoter rule for missing actions
 - `src/garble/server.nim` — mummy HTTP/WS server (player, global, replay)
-- `src/garble_player.nim` — the prompt-delivery player (`PLAYER_PROMPT` /
+- `src/garble_player.nim` — the prompt and scripted player (`PLAYER_PROMPT` /
   `PLAYER_SCRIPTED` env)
 - `client/` — the inherited broadcast chrome (`chrome_common.js`,
   `chrome.css`) plus the Garble stage renderer and the global/player/replay
@@ -111,8 +109,8 @@ nim r -d:release --path:src tests/test_bot.nim  # scripted-baseline tests
 nim c -d:release -o:bin/garble src/garble.nim
 nim c -d:release -o:bin/garble-player src/garble_player.nim
 nim c --hints:off -d:emscripten replay-viewer/garble_replay.nim  # wasm viewer
-# Export ANTHROPIC_API_KEY for real Claude play; omit it and every seat
-# plays the scripted baselines with no network call at all.
+# Set a player-owned Claude credential for model play. Without one the prompt
+# player sends quoter fallback actions without a network call.
 ```
 
 Coworld packaging (from a metta checkout):
@@ -121,7 +119,6 @@ Coworld packaging (from a metta checkout):
 uv run coworld build --project <this dir> --version 0.1.x
 uv run coworld certify <this dir>/dist/coworld_manifest.json
 uv run coworld upload-coworld <this dir>/dist/coworld_manifest.json
-uv run coworld secret put garble anthropic_api_key <keyfile>   # hosted Claude
 ```
 
 ## Fielding a policy
@@ -135,3 +132,8 @@ uv run coworld upload-policy <garble image> --name my-garble \
 Or field a scripted baseline: same image,
 `--env PLAYER_SCRIPTED=quoter` (the honest repeater) or
 `--env PLAYER_SCRIPTED=shark` (the terse opportunist).
+
+To field a Jev or trained policy, package
+[`players/ordinary/`](players/ordinary/README.md) and use its player image.
+It sends actions through the same player socket; the game retains validation,
+effects, scoring, and replay.

@@ -1,0 +1,10 @@
+FROM python:3.12-slim
+
+WORKDIR /player
+COPY players/ordinary/requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+COPY players/ordinary/*.py .
+COPY docs/rules.md /player/rules.md
+ENV GARBLE_RULES_FILE=/player/rules.md
+
+CMD ["python", "player.py"]

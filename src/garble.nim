@@ -43,5 +43,5 @@ when isMainModule:
     echo "garble: seats=", config.players.len,
       " turns=", config.turns,
       " noiseScale=", config.noiseScale,
-      " model=", config.model
+      " action_timeout=", config.actionTimeoutSeconds
     runGameServer(config, runtimeConfig)

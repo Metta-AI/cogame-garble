@@ -5,6 +5,8 @@ import std/[json, os, osproc, strutils]
 import garble/[llm, sim]
 
 const OperatorPrompt = "Choose legal transmissions and confirmations to maximize your score over the complete game."
+const PlayerRules = staticRead(currentSourcePath().parentDir().parentDir() /
+  "docs" / "rules.md")
 const Variants = ["standard", "storm", "long-session"]
 
 when isMainModule:
@@ -49,23 +51,11 @@ when isMainModule:
       sim.beginTurn()
       var decisions: seq[Decision]
       for seat in 0 ..< Seats:
+        let view = sim.seatDecisionView(seat)
         let teacher = scriptedAction(sim, seat,
           if seat mod 2 == 0: skQuoter else: skShark)
-        var completion = %*{
-          "channel": (if teacher.channel == Radio: "RADIO"
-            else: sim.names[teacher.channel]),
-          "text": teacher.text,
-          "notes": teacher.notes,
-          "confirm": newJNull()
-        }
-        if teacher.hasConfirm:
-          completion["confirm"] = %*{
-            "ticket": teacher.ticket,
-            "side": $teacher.side,
-            "commodity": Commodities[teacher.commodity],
-            "qty": teacher.qty,
-            "price": teacher.price
-          }
+        let completion = scriptedDecisionFromView(view,
+          if seat mod 2 == 0: skQuoter else: skShark)
         let parsed = parseDecision(sim, seat, completion)
         doAssert parsed == teacher
         decisions.add(parsed)
@@ -74,9 +64,8 @@ when isMainModule:
           "seed": "garble-" & variant & "-" & $seed,
           "decision_id": rows.len,
           "prompt": [
-            {"role": "system", "content": systemPrompt(sim, seat)},
-            {"role": "user", "content": userPrompt(sim, seat,
-              OperatorPrompt)}
+            {"role": "system", "content": "Play Garble. Submit one complete decision as JSON.\n\n" & PlayerRules},
+            {"role": "user", "content": $view & "\n" & OperatorPrompt}
           ],
           "completion": [{"role": "assistant", "content": $completion}],
           "game": "garble",

@@ -1,24 +1,13 @@
-## Claude-backed decision making for Garble. Each seat's policy is just a
-## prompt: the game server composes the seat's view (its private inventory
-## and contract, the public prices and interference forecast, its OWN heard
-## traffic, the tickets it may confirm with their ready-made confirm JSON,
-## and the public tape) plus that seat's prompt, and asks Claude what it
-## transmits and what it confirms.
-##
-## Decisions within a turn are SIMULTANEOUS by rule, so all five requests go
-## out as ONE parallel batch (curly.makeRequests); an ill-formed reply is
-## retried once as a smaller batch carrying a hint, and anything still open
-## falls back to the `quoter` scripted baseline.
+## Player-side Claude decisions and scripted baselines for Garble. The game
+## sends a private general observation to every seat and accepts one complete
+## action. The player owns prompts, model calls, and candidate construction.
 ##
 ## Credentials, in order of preference:
 ##   Bedrock sidecar / bearer token   - hosted pods
 ##   ANTHROPIC_API_KEY                - the key itself
 ##   ANTHROPIC_API_KEY_URI            - a URI holding the key
-## With no credentials every decision falls back to the always-legal
-## scripted baseline immediately (no retries, no network waits) so offline
-## certification still completes - this fallback is load-bearing. The same
-## scripted bots are also fieldable policies: a player that registers as
-## scripted plays one deliberately, LLM or not.
+## Without a model credential the bundled prompt player sends a quoter
+## fallback. Quoter and shark are also fieldable scripted player policies.
 
 import
   std/[json, math, os, strutils, unicode],
@@ -61,12 +50,7 @@ type
     bedrockToken: string
     model: string               ## direct-Anthropic transport only
     maxOutputTokens: int
-    timeoutSeconds*: int
     disabled*: bool             ## true once credentials are known-unavailable
-    callsIssued*: int           ## requests the last decideAll actually sent
-    decidedScripted*: seq[bool] ## per position in the last decideAll's seats:
-                                ## true when that seat's move came from a
-                                ## baseline rather than from a model reply
 
 proc parseScriptKind*(text: string): ScriptKind =
   ## PLAYER_SCRIPTED values: "1"/"true"/"yes"/"quoter" play the honest
@@ -119,11 +103,10 @@ proc bedrockUrl(client: LlmClient): string =
   client.bedrockEndpoint & "/model/" &
     client.bedrockModels[client.bedrockModel] & "/invoke"
 
-proc newLlmClient*(config: GameConfig): LlmClient =
+proc newLlmClient*(maxOutputTokens: int, model: string): LlmClient =
   result = LlmClient(
-    model: config.model,
-    maxOutputTokens: config.maxOutputTokens,
-    timeoutSeconds: config.llmTimeoutSeconds
+    model: model,
+    maxOutputTokens: maxOutputTokens
   )
   let bedrockEndpoint = getEnv("AWS_ENDPOINT_URL_BEDROCK_RUNTIME").strip()
   let bedrockToken = getEnv("AWS_BEARER_TOKEN_BEDROCK").strip()
@@ -275,126 +258,89 @@ proc scriptedAction*(sim: Sim, seat: int, kind: ScriptKind,
   result.qty = clamp(result.qty, 0, MaxQty)
   result.price = clamp(result.price, 0, MaxPrice)
 
+proc decisionJson*(sim: Sim, decision: Decision): JsonNode =
+  ## Serialize a complete normal player action, including its optional confirm.
+  result = %*{
+    "channel": (if decision.channel == Radio: "RADIO"
+      else: sim.names[decision.channel]),
+    "text": decision.text,
+    "notes": decision.notes,
+    "confirm": newJNull()
+  }
+  if decision.hasConfirm:
+    result["confirm"] = %*{
+      "ticket": decision.ticket,
+      "side": $decision.side,
+      "commodity": Commodities[decision.commodity],
+      "qty": decision.qty,
+      "price": decision.price
+    }
+
+proc scriptedDecisionFromView*(view: JsonNode, kind: ScriptKind): JsonNode =
+  ## The fieldable player derives its own baseline action from its private
+  ## observation, using the same published parameters as the offline oracle.
+  let surplus = view["surplus"].getInt()
+  let demand = view["demand"].getInt()
+  let units = view["units"]
+  let prices = view["prices"]
+  let repeat = kind == skQuoter and
+    view["interference"].getFloat() >= DefaultBaseline.loudBand
+  var text = ""
+  if view["airtime"].getInt() >= DefaultBaseline.airtimeFloor:
+    if units[surplus].getInt() >= 3:
+      text = offerText("SELL",
+        min(DefaultBaseline.maxLot, units[surplus].getInt()), surplus,
+        clamp(prices[surplus].getInt() + DefaultBaseline.sellMarkup, 1,
+          MaxPrice), repeat)
+    elif units[demand].getInt() < view["quota"].getInt():
+      text = offerText("BUY",
+        min(DefaultBaseline.maxLot,
+          view["quota"].getInt() - units[demand].getInt()), demand,
+        clamp(prices[demand].getInt() + DefaultBaseline.buyMarkup, 1,
+          MaxPrice), repeat)
+  result = %*{"channel": "RADIO", "text": text, "notes": "",
+    "confirm": newJNull()}
+  for ticket in view["tickets"]:
+    let heard = ticket["heard"]
+    if heard.kind == JNull:
+      continue
+    let commodity = heard["commodity"].getInt()
+    let price = heard["price"].getInt()
+    let buying = heard["side"].getStr() == "SELL"
+    if buying:
+      if commodity != demand or units[commodity].getInt() >=
+          view["quota"].getInt() or
+          price > prices[demand].getInt() + view["premium"].getInt() - 1 or
+          (price > 0 and view["cash"].getInt() < price):
+        continue
+    elif commodity != surplus or price < prices[surplus].getInt() + 1 or
+        units[commodity].getInt() <= 0:
+      continue
+    var qty = heard["qty"].getInt()
+    var chosenPrice = price
+    if kind == skShark:
+      for neighbor in heard["qty_neighbors"]:
+        let value = neighbor.getInt()
+        if value >= 1:
+          qty = if buying: max(qty, value) else: min(qty, value)
+      for neighbor in heard["price_neighbors"]:
+        let value = neighbor.getInt()
+        if value >= 0:
+          chosenPrice = if buying: min(chosenPrice, value)
+            else: max(chosenPrice, value)
+    result["confirm"] = %*{
+      "ticket": ticket["id"].getInt(),
+      "side": heard["side"].getStr(),
+      "commodity": Commodities[commodity],
+      "qty": clamp(qty, 0, MaxQty),
+      "price": clamp(chosenPrice, 0, MaxPrice)
+    }
+    break
+
 # ---- Prompt building --------------------------------------------------------
 
-proc channelLabel(sim: Sim, channel: int): string =
-  if channel == Radio: "RADIO" else: "LINE to " & sim.names[channel]
-
-proc percent(value: float): string =
-  $int(round(value * 100.0)) & "%"
-
-proc money(value: int): string =
-  $value
-
-proc contractLine(sim: Sim, seat: int): string =
-  "YOUR CONTRACT: +" & $sim.premium[seat] & " credits per " &
-    Commodities[sim.dem[seat]] & " you hold at the end, up to " &
-    $sim.quota[seat] & " units."
-
-proc holdingLine(sim: Sim, seat: int): string =
-  var parts: seq[string]
-  for c in 0 ..< CommodityCount:
-    parts.add(Commodities[c] & " " & $sim.units[seat][c])
-  parts.join(", ")
-
-proc forecastBlock(sim: Sim): string =
-  var parts: seq[string]
-  for t in 0 ..< sim.curve.len:
-    parts.add("t" & $t & " " & percent(sim.curve[t]) &
-      (if t == sim.turn: " \u2190 now" else: ""))
-  "  " & parts.join("  ")
-
-proc priceBlock(sim: Sim): string =
-  let now = sim.livePrices()
-  let was = sim.priceRow(max(0, sim.turn - 1))
-  var parts: seq[string]
-  for c in 0 ..< CommodityCount:
-    parts.add(Commodities[c] & " " & $now[c] &
-      (if sim.turn <= 0 or was[c] == now[c]: " (=)" else: " (was " & $was[c] &
-        ")"))
-  "PRICES: " & parts.join("  ")
-
-proc termsText(terms: Terms): string =
-  $terms.side & " " & $terms.qty & " " & Commodities[terms.commodity] &
-    " AT " & $terms.price
-
-proc confirmSkeleton(id: int, terms: Terms): string =
-  "{\"ticket\":" & $id & ",\"side\":\"" & $terms.side & "\",\"qty\":" &
-    $terms.qty & ",\"commodity\":\"" & Commodities[terms.commodity] &
-    "\",\"price\":" & $terms.price & "}"
-
-proc ticketBlock(sim: Sim, seat: int): string =
-  ## The legal choice set, precomputed by the SAME code that validates a
-  ## confirm — a formal-output game that makes the model derive the skeleton
-  ## falls back to scripted on a large share of turns.
-  var lines: seq[string]
-  for ticket in sim.openTicketsFor(seat):
-    let event = sim.sayEventFor(ticket)
-    let heard = sim.heardFor(seat, event)
-    lines.add("  #" & $ticket.id & " from " & sim.names[ticket.offerer] &
-      " on " & (if ticket.channel == Radio: "RADIO" else: "a LINE to you") &
-      " (opened turn " & $ticket.turn & ", expires turn " & $ticket.expiry &
-      ")")
-    lines.add("     you heard: \"" & heardText(heard) & "\"")
-    let reading = scanTerms(heardWords(heard))
-    if reading.isSome:
-      lines.add("     your reading: " & termsText(reading.get()))
-      lines.add("     to confirm: " & confirmSkeleton(ticket.id, reading.get()))
-    else:
-      lines.add("     your reading: unparsed \u2014 no terms")
-      lines.add("     to confirm you must supply side, qty, commodity and " &
-        "price yourself.")
-  if lines.len == 0:
-    return "TICKETS YOU MAY CONFIRM:\n  (none)\n\n"
-  "TICKETS YOU MAY CONFIRM:\n" & lines.join("\n") & "\n\n"
-
-proc heardBlock(sim: Sim, seat: int): string =
-  ## The last `HeardWindow` turns in full, earlier turns summarised to 40
-  ## runes. This is the only block that is windowed — the tape and the
-  ## ticket block print in full — so the whole user prompt peaks at about
-  ## 5 400 runes on a twelve-turn episode and 8 100 at the 24-turn cap
-  ## (measured; see docs/plans/2026-08-24-garble-design.md).
-  var lines: seq[string]
-  for event in sim.events:
-    if event.kind != evSay or event.seat == seat or event.silent:
-      continue
-    let words = sim.heardFor(seat, event)
-    if words.len == 0 and event.text.len > 0:
-      continue
-    let full = heardText(words)
-    let label = "  turn " & $event.turn & "  " & sim.names[event.seat] &
-      " \u2192 " & (if event.channel == Radio: "RADIO" else: "LINE") & ": "
-    if event.turn >= sim.turn - HeardWindow:
-      lines.add(label & "\"" & full & "\"")
-    else:
-      lines.add(label & "\"" &
-        (if full.runeLen > 40: full.runeSubStr(0, 40) & "\u2026" else: full) &
-        "\"")
-  if lines.len == 0:
-    return "WHAT YOU HEARD (last " & $HeardWindow &
-      " turns in full; earlier turns summarised):\n  (nothing yet)\n\n"
-  "WHAT YOU HEARD (last " & $HeardWindow &
-    " turns in full; earlier turns summarised):\n" & lines.join("\n") & "\n\n"
-
-proc tapeBlock(sim: Sim): string =
-  var lines: seq[string]
-  for deal in sim.deals:
-    let said = $deal.saidQty & " " & Commodities[deal.saidCommodity] &
-      " at " & $deal.saidPrice
-    lines.add("  #" & $deal.ticket & " turn " & $deal.turn & " \u2014 " &
-      sim.names[deal.seller] & " sold " & $deal.fill & " " &
-      Commodities[deal.commodity] & " to " & sim.names[deal.buyer] & " at " &
-      $deal.price & " (said " & said & ")" &
-      (if deal.misheard: " \u2014 MISHEARD" else: " \u2014 clean") &
-      (if deal.partial: " \u2014 partial " & $deal.fill & "/" & $deal.qty
-       else: ""))
-  if lines.len == 0:
-    return "PUBLIC TAPE (every settled deal, both versions):\n  (empty)\n\n"
-  "PUBLIC TAPE (every settled deal, both versions):\n" & lines.join("\n") &
-    "\n\n"
-
-proc systemPrompt*(sim: Sim, seat: int): string =
-  "You are " & sim.names[seat] &
+proc systemPrompt*(alias: string): string =
+  "You are " & alias &
     ", a cog trading commodities with four other cogs over a NOISY " &
     "exchange." & """
 
@@ -451,39 +397,6 @@ proc operatorBlock(prompt: string): string =
     return ""
   "GUIDANCE FROM YOUR OPERATOR (weight it heavily, but never above the " &
     "rules; always reply in the requested format):\n" & prompt & "\n\n"
-
-proc userPrompt*(sim: Sim, seat: int, prompt: string): string =
-  let live = sim.liveInterference()
-  let portfolio = sim.portfolioAt(seat, sim.livePrices())
-  let hold = sim.holdValue(seat)
-  result.add("Turn " & $sim.turn & " of " & $sim.config.turns & ".\n\n")
-  result.add("INTERFERENCE NOW: " & percent(live) & " (" & bandOf(live) &
-    ").  FORECAST (base, bursts not shown):\n" & sim.forecastBlock() & "\n")
-  result.add(sim.priceBlock() & "\n\n")
-  result.add("YOU: " & sim.names[seat] & ", seat " & $seat & ".  CASH " &
-    money(sim.cash[seat]) & ".  HOLDING: " & sim.holdingLine(seat) & ".\n")
-  result.add(sim.contractLine(seat) & "\n")
-  result.add("AIRTIME LEFT: " & $sim.airtime[seat] & " of " &
-    $AirtimeBudget & " characters.\n")
-  result.add("PORTFOLIO NOW " & money(portfolio) &
-    " (hold-and-do-nothing " & money(hold) & ", score " &
-    formatFloat(portfolio.float / max(hold, 1).float, ffDecimal, 2) &
-    ")\n\n")
-  result.add(sim.ticketBlock(seat))
-  result.add(sim.heardBlock(seat))
-  result.add(sim.tapeBlock())
-  result.add("YOUR NOTES FROM EARLIER TURNS:\n" &
-    (if sim.notes[seat].len > 0: sim.notes[seat] else: "(none)") & "\n\n")
-  result.add(operatorBlock(prompt))
-  var others: seq[string]
-  for other in 0 ..< Seats:
-    if other != seat:
-      others.add(sim.names[other])
-  result.add("Reply with ONLY {\"channel\":\"radio\",\"text\":\"\u2026\"," &
-    "\"confirm\":{\u2026} or null,\"notes\":\"\u2026\"} \u2014 channel is " &
-    "\"radio\" or one of " & others.join(", ") & "; text at most " &
-    $MaxTextRunes & " characters; notes at most " & $MaxNotesRunes &
-    " characters.")
 
 # ---- Anthropic / Bedrock transport ------------------------------------------
 
@@ -656,72 +569,19 @@ proc parseDecision*(sim: Sim, seat: int, payload: JsonNode): Decision =
   result.qty = parseNumber(confirm{"qty"}, "qty", MaxQty)
   result.price = parseNumber(confirm{"price"}, "price", MaxPrice)
 
-# ---- One parallel batch per turn --------------------------------------------
+# ---- Ordinary player inference ---------------------------------------------
 
-proc decideAll*(
-  client: LlmClient,
-  sim: Sim,
-  seats: seq[int],
-  prompts: seq[string],
-  scripted: seq[ScriptKind],
-  timeoutSeconds: int
-): seq[Decision] =
-  ## One decision per seat in `seats`, in order. Never raises: any failure
-  ## falls back to the `quoter` baseline so the episode always advances.
-  ## `prompts` and `scripted` are indexed by SEAT.
-  ##
-  ## Garble is a simultaneous-decision game, so every open seat's request
-  ## goes out in ONE batch. Sequential seats are exactly how an LLM coworld
-  ## blows its play budget.
-  result = newSeq[Decision](seats.len)
-  client.callsIssued = 0
-  client.decidedScripted = newSeq[bool](seats.len)
-  var open: seq[int]     ## indexes into `seats` still undecided
-  for index, seat in seats:
-    let kind = scripted[seat]
-    if kind != skNone or client.disabled:
-      result[index] = scriptedAction(sim, seat,
-        (if kind == skNone: skQuoter else: kind))
-      client.decidedScripted[index] = true
-    else:
-      open.add(index)
-  for attempt in 0 .. 1:
-    if open.len == 0 or client.disabled:
-      break
-    var batch: RequestBatch
-    for index in open:
-      let seat = seats[index]
-      var user = sim.userPrompt(seat, prompts[seat])
-      if attempt > 0:
-        user.add("\nYour previous reply was invalid. Respond with ONLY the " &
-          "requested JSON object: \"channel\" a string, \"text\" a string, " &
-          "\"confirm\" either null or an object with \"ticket\" (an integer " &
-          "at least 1), \"side\" (SELL or BUY), \"commodity\" (ORE, OAT, " &
-          "TIN or TAR), \"qty\" and \"price\" (integers 0..99).")
-      let request = client.requestFor(systemPrompt(sim, seat), user)
-      batch.post(request.url, request.headers, request.body, $index)
-    client.callsIssued += open.len
-    let responses = client.curl.makeRequests(batch, timeoutSeconds)
-    var stillOpen: seq[int]
-    for position, index in open:
-      let seat = seats[index]
-      try:
-        let text = client.textOf(responses[position].response,
-          responses[position].error, batch[position].url)
-        ## `parseDecision` IS the ill-formed gate: it raises on unreadable
-        ## JSON and on a confirm whose fields are missing or out of range,
-        ## and it caps text, notes and channel, so a decision that gets this
-        ## far is always applicable. An INADMISSIBLE confirm is not
-        ## ill-formed — it is a legal move whose outcome is a void — so it is
-        ## never rejected here and never retried.
-        result[index] = parseDecision(sim, seat, extractJsonObject(text))
-      except CatchableError as error:
-        echo "garble llm: seat ", seat, " attempt ", attempt, " failed: ",
-          error.msg
-        stillOpen.add(index)
-    open = stillOpen
-  for index in open:
-    let seat = seats[index]
-    echo "garble llm: seat ", seat, " falling back to scripted decision"
-    result[index] = scriptedAction(sim, seat, skQuoter)
-    client.decidedScripted[index] = true
+proc choosePromptAction*(client: LlmClient, view: JsonNode, prompt: string,
+    timeoutSeconds, slot: int): JsonNode =
+  let system = systemPrompt(view["alias"].getStr())
+  let user = $view & "\n\n" & operatorBlock(prompt) &
+    "Reply with ONLY a JSON object containing channel, text, confirm " &
+    "(an object or null), and notes."
+  var request = client.requestFor(system, user)
+  if client.transport == ltBedrock:
+    request.headers["x-coworld-player-slot"] = $slot
+  let response = client.curl.post(request.url, request.headers, request.body,
+    timeoutSeconds)
+  result = extractJsonObject(client.textOf(response, "", request.url))
+  if result.kind != JObject:
+    raise newException(GarbleError, "model decision must be an object")

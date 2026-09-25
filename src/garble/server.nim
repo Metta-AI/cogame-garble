@@ -3,26 +3,26 @@
 ## Endpoints:
 ##   GET /healthz                    - liveness
 ##   GET /client/global              - spectator page
-##   GET /client/player              - player page (view-only; policies are prompts)
+##   GET /client/player              - player page (view-only)
 ##   GET /client/replay              - replay page (replay mode)
 ##   GET /client/renderer.js         - the game stage renderer
 ##   GET /client/chrome_common.js    - the inherited broadcast chrome
 ##   GET /client/chrome.css          - the inherited broadcast styling
 ##   GET /client/assets/<name>       - sprites and fonts
-##   WS  /player?slot=N&token=T      - player protocol (prompt delivery)
+##   WS  /player?slot=N&token=T      - player protocol
 ##   WS  /global                     - spectator snapshots
 ##   WS  /replay                     - replay payload (replay mode)
 ##
-## Player protocol (garble.player.v1), all JSON text frames:
+## Player protocol (garble.player.v3), all JSON text frames:
 ##   game -> player: {"type":"welcome","slot":N,"name":...,"turns":int}
 ##                   {"type":"state",...} after every event, redacted to the
 ##                   seat's own tallies (Garble has real hidden information)
 ##                   {"type":"final","scores":[...],"portfolio":[...]}
-##   player -> game: {"type":"prompt","prompt":"...","scripted":bool,
-##                    "baseline":"quoter"|"shark"} (prompt max 4000 runes)
+##                   {"type":"decision","turn":N,"action":{...}}
+##   game -> player: {"type":"turn","turn":N,"view":{...},"timeout_ms":N}
 
 import
-  std/[json, locks, os, sets, strutils, tables, times, unicode],
+  std/[json, locks, os, sets, strutils, tables, times],
   bitworld/runtime,
   curly,
   mummy,
@@ -31,23 +31,19 @@ import
   sim
 
 const
-  MaxPromptRunes = 4000
   ReplayVersion = 1
   ## Seconds /healthz and /global keep answering after the artifacts are
   ## written. The platform's collectors are still reading when the episode
   ## settles, and a process that exits the same millisecond loses them.
   ShutdownGraceSeconds = 20
-  ## Rate limiting: the hosted Bedrock sidecar caps 30 requests per minute
-  ## per episode, so a batch of N calls must be followed by at least
-  ## N * 2400 ms before the next batch starts.
-  MsPerCall = 2400
 
 type
   GameState = object
     config: GameConfig
     sim: Sim
-    prompts: seq[string]
-    scripted: seq[ScriptKind]
+    pendingTurn: int
+    pendingDecisions: Table[int, Decision]
+    pendingSources: Table[int, string]
     playerSockets: Table[int, WebSocket]
     socketSlots: Table[WebSocket, int]
     globalSockets: HashSet[WebSocket]
@@ -104,7 +100,7 @@ proc playerStateJson(gs: GameState, slot: int): JsonNode =
   ## Garble has real hidden information (every other seat's inventory,
   ## contract, notes and said text, and every other listener's garbling), so
   ## a player frame carries only that seat's own public tallies. Decisions
-  ## are server-side, so nothing is lost.
+  ## use a separate private turn view, so nothing is lost here.
   var units = newJArray()
   for c in 0 ..< CommodityCount:
     units.add(%gs.sim.units[slot][c])
@@ -295,8 +291,6 @@ proc playEpisode(runtimeConfig: RuntimeConfig) {.gcsafe.} =
         config.tokens.len, " players connected"
       state.broadcastLocked()
 
-    let client = newLlmClient(config)
-
     ## The platform kills the episode at its timeout and keeps nothing. Play
     ## inside a fraction of it so results and the replay are written with
     ## room to spare. The hosted dispatcher hands the timeout only to its own
@@ -317,19 +311,12 @@ proc playEpisode(runtimeConfig: RuntimeConfig) {.gcsafe.} =
         (if hostedTimeout.len > 0: "from env" else: "assumed"),
         "); playing until ", (timeoutSeconds * PlayBudgetFraction).int, "s"
 
-    var seats: seq[int]
-    for seat in 0 ..< Seats:
-      seats.add(seat)
-    var callsLastTurn = 0
-    var lastBatchStart = 0.0
-
+    var lastTurnStart = 0.0
     while true:
       ## Step 0: the deadline check happens BEFORE the turn opens, so a
       ## deadline ending is a clean, scored, replayed episode rather than a
       ## discarded one.
       var simCopy: Sim
-      var prompts: seq[string]
-      var scripted: seq[ScriptKind]
       var stop = false
       withLock stateLock:
         if state.sim.done:
@@ -348,56 +335,86 @@ proc playEpisode(runtimeConfig: RuntimeConfig) {.gcsafe.} =
             " at ", (epochTime() - gameStart).int, "s"
           state.broadcastLocked()
           simCopy = state.sim
-          prompts = state.prompts
-          scripted = state.scripted
       if stop:
         break
 
-      ## Rate limiting: batch starts are floored so an episode never exceeds
-      ## the hosted sidecar's 30 requests/minute.
-      if lastBatchStart > 0.0:
-        let spacingMs = max(config.minTurnSpacingMs, callsLastTurn * MsPerCall)
-        let waitMs = int(float(spacingMs) -
-          (epochTime() - lastBatchStart) * 1000.0)
-        if waitMs > 0:
-          sleep(min(waitMs, spacingMs))
-      lastBatchStart = epochTime()
+      if lastTurnStart > 0.0:
+        let remaining = config.turnSpacingMs -
+          int((epochTime() - lastTurnStart) * 1000.0)
+        if remaining > 0:
+          sleep(remaining)
+      lastTurnStart = epochTime()
 
-      ## Every wait is bounded, and the batch timeout is additionally
+      ## Every wait is bounded, and the action timeout is additionally
       ## clamped to whatever is left of the play budget.
-      var effective = config.llmTimeoutSeconds
+      var effective = config.actionTimeoutSeconds
       if playDeadline > 0.0:
         effective = min(effective, max(5, int(playDeadline - epochTime())))
-      let decisions = client.decideAll(simCopy, seats, prompts, scripted,
-        effective)
-      callsLastTurn = client.callsIssued
+      let decisionDeadline = epochTime() + effective.float
+      var waitingSeats: seq[int]
+      withLock stateLock:
+        state.pendingTurn = simCopy.turn
+        state.pendingDecisions.clear()
+        state.pendingSources.clear()
+        for seat in 0 ..< Seats:
+          if state.playerSockets.hasKey(seat):
+            state.playerSockets[seat].send($ %*{
+              "type": "turn",
+              "turn": simCopy.turn,
+              "timeout_ms": effective * 1000,
+              "view": simCopy.seatDecisionView(seat)
+            })
+            waitingSeats.add(seat)
+      while waitingSeats.len > 0 and epochTime() < decisionDeadline:
+        var received = 0
+        withLock stateLock:
+          for seat in waitingSeats:
+            if state.pendingDecisions.hasKey(seat):
+              received.inc
+        if received == waitingSeats.len:
+          break
+        sleep(20)
+
+      var decisions = newSeq[Decision](Seats)
+      var wasScripted = newSeq[bool](Seats)
+      var accepted = newSeq[bool](Seats)
+      withLock stateLock:
+        for seat in 0 ..< Seats:
+          if state.pendingDecisions.hasKey(seat):
+            decisions[seat] = state.pendingDecisions[seat]
+            wasScripted[seat] = state.pendingSources[seat] != "player"
+            accepted[seat] = state.pendingSources[seat] != "fallback"
+            continue
+          echo "garble: seat ", seat, " using scripted fallback"
+          decisions[seat] = scriptedAction(simCopy, seat, skQuoter)
+          wasScripted[seat] = true
+        state.pendingTurn = -1
 
       withLock stateLock:
         ## Transmit, in seat order.
         for seat in 0 ..< Seats:
           let decision = decisions[seat]
-          let wasScripted = scripted[seat] != skNone or client.disabled or
-            client.decidedScripted[seat]
           echo "garble: ", sayLine(state.sim, seat, decision)
           try:
             state.sim.applySay(seat, decision.channel, decision.text,
-              decision.notes, wasScripted)
+              decision.notes, wasScripted[seat])
           except GarbleError as error:
             echo "garble: transmission rejected (", error.msg,
               "); using the scripted fallback"
             let fallback = scriptedAction(state.sim, seat, skQuoter)
             state.sim.applySay(seat, fallback.channel, fallback.text, "", true)
+            wasScripted[seat] = true
+            accepted[seat] = false
           state.broadcastLocked()
         ## Confirms, in seat order, after every transmission has landed.
         for seat in 0 ..< Seats:
           let decision = decisions[seat]
           if not decision.hasConfirm:
             continue
-          let wasScripted = scripted[seat] != skNone or client.disabled or
-            client.decidedScripted[seat]
           try:
             state.sim.applyConfirm(seat, decision.ticket, decision.side,
-              decision.qty, decision.commodity, decision.price, wasScripted)
+              decision.qty, decision.commodity, decision.price,
+              wasScripted[seat])
           except GarbleError as error:
             ## An inadmissible confirm is a legal move that voids; only a
             ## malformed one lands here, and it costs the seat its confirm.
@@ -405,6 +422,12 @@ proc playEpisode(runtimeConfig: RuntimeConfig) {.gcsafe.} =
           state.broadcastLocked()
         state.sim.endTurn()
         state.broadcastLocked()
+        for seat in 0 ..< Seats:
+          if state.playerSockets.hasKey(seat):
+            state.playerSockets[seat].send($ %*{
+              "type": "decision_result", "turn": simCopy.turn,
+              "accepted": accepted[seat]
+            })
 
       ## Pace so a spectator can read the turn that just landed.
       if config.turnDelayMs > 0:
@@ -507,7 +530,7 @@ proc playerUpgradeHandler(request: Request) {.gcsafe.} =
         state.playerSockets.len, "/", state.config.tokens.len, ")"
       websocket.send($ %*{
         "type": "welcome",
-        "protocol": "garble.player.v1",
+        "protocol": "garble.player.v3",
         "slot": slot,
         "name": state.sim.names[slot],
         "turns": state.config.turns
@@ -551,21 +574,20 @@ proc websocketHandler(
         return
       try:
         let payload = parseJson(message.data)
-        if payload{"type"}.getStr() == "prompt":
-          var prompt = payload{"prompt"}.getStr()
-          if prompt.runeLen > MaxPromptRunes:
-            prompt = prompt.runeSubStr(0, MaxPromptRunes)
-          var kind = skNone
-          if payload{"scripted"}.getBool(false):
-            kind = parseScriptKind(payload{"baseline"}.getStr("quoter"))
-            if kind == skNone:
-              kind = skQuoter
+        if payload{"type"}.getStr() == "decision":
+          let turn = payload["turn"].getInt()
+          let action = payload["action"]
+          if action.kind != JObject:
+            raise newException(GarbleError, "decision action must be an object")
           withLock stateLock:
-            state.prompts[slot] = prompt
-            state.scripted[slot] = kind
-          echo "garble: slot ", slot, " delivered a prompt (",
-            prompt.runeLen, " runes",
-            (if kind != skNone: ", scripted " & $kind else: ""), ")"
+            if turn == state.pendingTurn and
+                not state.pendingDecisions.hasKey(slot):
+              let source = payload{"source"}.getStr("player")
+              if source notin ["player", "scripted", "fallback"]:
+                raise newException(GarbleError, "unknown decision source")
+              state.pendingDecisions[slot] = parseDecision(state.sim, slot,
+                action)
+              state.pendingSources[slot] = source
       except CatchableError as error:
         echo "garble: ignoring bad player frame: ", error.msg
     of ErrorEvent:
@@ -624,8 +646,9 @@ proc runGameServer*(config: GameConfig, runtimeConfig: RuntimeConfig) =
     raise newException(GarbleError, "tokens and players must align")
   state.config = config
   state.sim = initSim(config)
-  state.prompts = newSeq[string](config.players.len)
-  state.scripted = newSeq[ScriptKind](config.players.len)
+  state.pendingTurn = -1
+  state.pendingDecisions = initTable[int, Decision]()
+  state.pendingSources = initTable[int, string]()
   runtimeConfigGlobal = runtimeConfig
 
   let router = buildRouter(replayMode = false)
