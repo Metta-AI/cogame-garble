@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run Jev, prompt, and scripted Garble players on one native game build."""
+"""Run canned, prompt, and scripted Garble players on one native game build."""
 
 import json
 import os
@@ -17,27 +17,19 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "players/ordinary"))
 from player import baseline_action  # noqa: E402
 
-requests = {"jev": 0, "prompt": 0}
+requests = {"prompt": 0}
 
 
 class Stub(BaseHTTPRequestHandler):
     def do_POST(self):
         body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
-        if self.path.endswith("/v1/systemone"):
-            requests["jev"] += 1
-            assert self.headers["X-Coworld-Player-Slot"] == "0"
-            criteria = body["questions"]["action"]["criteria"]
-            assert len(criteria) == 2
-            response = {"answers": {"action": {"type": "choice", "probabilities":
-                {"0": 0.0, "1": 1.0}}}}
-        else:
-            requests["prompt"] += 1
-            assert self.headers["X-Coworld-Player-Slot"] == "1"
-            user = body["messages"][0]["content"]
-            view, _ = json.JSONDecoder().raw_decode(user)
-            action = baseline_action(view, False)
-            response = {"content": [{"type": "text", "text": json.dumps(action)}],
-                        "stop_reason": "end_turn"}
+        requests["prompt"] += 1
+        assert self.headers["X-Coworld-Player-Slot"] == "1"
+        user = body["messages"][0]["content"]
+        view, _ = json.JSONDecoder().raw_decode(user)
+        action = baseline_action(view, False)
+        response = {"content": [{"type": "text", "text": json.dumps(action)}],
+                    "stop_reason": "end_turn"}
         encoded = json.dumps(response).encode()
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
@@ -86,7 +78,7 @@ with tempfile.TemporaryDirectory(prefix="garble-policy-") as scratch:
         else:
             raise AssertionError("game socket unavailable")
         for slot, settings in enumerate((
-            {"POC_JEV": "1"},
+            {},
             {"PLAYER_PROMPT": "Trade toward your contract."},
             {"PLAYER_SCRIPTED": "quoter"},
             {"PLAYER_SCRIPTED": "shark"},
@@ -107,13 +99,13 @@ with tempfile.TemporaryDirectory(prefix="garble-policy-") as scratch:
             assert player.wait(timeout=5) == 0, (root / f"player-{slot}.log").read_text()
         results = json.loads((root / "results.json").read_text())
         replay = json.loads((root / "replay.json").read_text())
-        assert requests == {"jev": 6, "prompt": 6}, requests
+        assert requests == {"prompt": 6}, requests
         assert results["reason"] == "complete", results
         decisions = [event for event in replay["events"] if event["kind"] == "say"]
         assert len(decisions) == 30, len(decisions)
         assert [event["scripted"] for event in decisions] == [
             False, False, True, True, True] * 6, decisions
-        print("Garble player smoke: 6 Jev, 6 prompt, 18 scripted actions, zero fallback")
+        print("Garble player smoke: 6 canned, 6 prompt, 18 scripted actions, zero fallback")
     finally:
         for process in [*players, game]:
             if process.poll() is None:
