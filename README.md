@@ -35,7 +35,7 @@ you, and your counterparty's only defence is a tighter protocol.
 turn view and sends a complete action. It includes that seat's inventory,
 contract, interference forecast, heard traffic, confirmable tickets, and the
 public deal tape. The game validates actions and applies them in seat order.
-An ordinary player with canned, Jev, and trained-adapter backends is in
+An ordinary player with canned and trained-adapter backends is in
 [`players/ordinary/`](players/ordinary/README.md).
 Two built-in **scripted baselines** — `quoter`, the honest repeater, and
 `shark`, the terse opportunist — submit their own actions from the player
@@ -133,7 +133,7 @@ Or field a scripted baseline: same image,
 `--env PLAYER_SCRIPTED=quoter` (the honest repeater) or
 `--env PLAYER_SCRIPTED=shark` (the terse opportunist).
 
-To field a Jev or trained policy, package
+To field a trained policy, package
 [`players/ordinary/`](players/ordinary/README.md) and use its player image.
 It sends actions through the same player socket; the game retains validation,
 effects, scoring, and replay.
