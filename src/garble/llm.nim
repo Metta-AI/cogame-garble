@@ -3,7 +3,8 @@
 ## action. The player owns prompts, model calls, and candidate construction.
 ##
 ## Credentials, in order of preference:
-##   Bedrock sidecar / bearer token   - hosted pods
+##   COWORLD_LLM_ENDPOINT            - hosted sidecar
+##   Bedrock bearer token            - local play
 ##   ANTHROPIC_API_KEY                - the key itself
 ##   ANTHROPIC_API_KEY_URI            - a URI holding the key
 ## Without a model credential the bundled prompt player sends a quoter
@@ -38,13 +39,14 @@ type
     price*: int
 
   LlmTransport = enum
-    ltNone, ltBedrock, ltAnthropic
+    ltNone, ltSidecar, ltBedrock, ltAnthropic
 
   LlmClient* = ref object
     curl: Curly
     transport: LlmTransport
     apiKey: string              ## anthropic transport
-    bedrockEndpoint: string     ## bedrock transport: sidecar or public host
+    sidecarEndpoint: string
+    bedrockEndpoint: string     ## local Bedrock transport
     bedrockModels: seq[string]  ## candidates, tried in order on denial
     bedrockModel: int           ## index into bedrockModels
     bedrockToken: string
@@ -108,6 +110,13 @@ proc newLlmClient*(maxOutputTokens: int, model: string): LlmClient =
     model: model,
     maxOutputTokens: maxOutputTokens
   )
+  let sidecarEndpoint = getEnv("COWORLD_LLM_ENDPOINT").strip()
+  if sidecarEndpoint.len > 0:
+    result.transport = ltSidecar
+    result.sidecarEndpoint = sidecarEndpoint.strip(chars = {'/'}, leading = false)
+    result.model = getEnv("COWORLD_LLM_MODEL", "anthropic/claude-haiku-4.5")
+    result.curl = newCurly()
+    return
   let bedrockEndpoint = getEnv("AWS_ENDPOINT_URL_BEDROCK_RUNTIME").strip()
   let bedrockToken = getEnv("AWS_BEARER_TOKEN_BEDROCK").strip()
   if bedrockEndpoint.len > 0 or bedrockToken.len > 0:
@@ -415,7 +424,7 @@ proc extractJsonObject*(text: string): JsonNode =
       head.replace("\n", " "))
   parseJson(text[start .. stop])
 
-proc requestFor(client: LlmClient, system, user: string):
+proc requestFor(client: LlmClient, system, user: string, slot: int):
     tuple[url: string, headers: HttpHeaders, body: string] =
   var body = %*{
     "max_tokens": client.maxOutputTokens,
@@ -423,12 +432,18 @@ proc requestFor(client: LlmClient, system, user: string):
     "messages": [{"role": "user", "content": user}]
   }
   var headers: HttpHeaders
+  if client.transport == ltSidecar and slot >= 0:
+    headers["X-Coworld-Player-Slot"] = $slot
   headers["content-type"] = "application/json"
   if client.transport == ltBedrock:
     body["anthropic_version"] = %BedrockAnthropicVersion
     if client.bedrockToken.len > 0:
       headers["authorization"] = "Bearer " & client.bedrockToken
     result.url = client.bedrockUrl()
+  elif client.transport == ltSidecar:
+    body["model"] = %client.model
+    headers["anthropic-version"] = AnthropicVersion
+    result.url = client.sidecarEndpoint & "/v1/messages"
   else:
     body["model"] = %client.model
     ## Only the Claude 5 / Opus tiers accept an effort setting; Haiku 4.5
@@ -577,8 +592,8 @@ proc choosePromptAction*(client: LlmClient, view: JsonNode, prompt: string,
   let user = $view & "\n\n" & operatorBlock(prompt) &
     "Reply with ONLY a JSON object containing channel, text, confirm " &
     "(an object or null), and notes."
-  var request = client.requestFor(system, user)
-  if client.transport == ltBedrock:
+  var request = client.requestFor(system, user, -1)
+  if client.transport == ltSidecar:
     request.headers["x-coworld-player-slot"] = $slot
   let response = client.curl.post(request.url, request.headers, request.body,
     timeoutSeconds)
