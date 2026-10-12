@@ -387,7 +387,7 @@ jobs:
           JS
 
           curl -fsSL -o /tmp/babel-chrome.css \
-            https://raw.githubusercontent.com/Metta-AI/cogame-babel/main/client/chrome.css
+            https://raw.githubusercontent.com/Metta-AI/cogame-babel/7a0162086ed70a9c79d9d06567d665d63a3813a7/client/chrome.css
           marker='/* ---------- garble additions ---------- */'
           line="$(grep -nF "${marker}" client/chrome.css | cut -d: -f1)"
           test -n "${line}" || {
