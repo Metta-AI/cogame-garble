@@ -1,39 +1,70 @@
-# Metta post-training data
+# Prompt diversity and post-training candidates
 
-The native simulator and published `quoter` and `shark` policies export
-supervised examples for all three certified Garble variants:
+Garble has two prompt surfaces. Native players use the noisy-exchange role instructions. Ordinary Python players use
+`docs/rules.md`. Canonical selection preserves each surface's original wording.
+
+The `garble-rules-v1` bank contains five training introductions: `canonical`, `plain`, `numbered`, `questions`, and
+`reordered`. The `heldout-briefing` and `heldout-reference` introductions are evaluation-only. Rules, private
+observations, action schemas, noise, and episode budgets remain unchanged.
+
+Set `promptVariant` in game configuration. `mixed` additionally requires nonnegative `promptSeed`; it selects one of the
+five training wordings for the whole episode. This seed never consumes simulation randomness. The host sends the same
+selection to native and ordinary players.
+
+## Source candidates
+
+Commit qualified source before exporting. The exporter runs complete manifest variants with the original quoter/shark
+teachers and simultaneous transmission/confirmation ordering:
 
 ```sh
 nimby sync nimby.lock
-for variant in standard storm long-session; do
-  nim r -d:release --path:src tools/export_posttrain.nim \
-    "/tmp/garble-${variant}" 10 1 "$variant"
-done
+nim c -d:release --path:src -o:/tmp/garble-export tools/export_posttrain.nim
+/tmp/garble-export /tmp/garble-candidates 10 1 standard mixed 4
 ```
 
-Each run reads the variant configuration from the Coworld manifest, adds the
-per-seat tokens supplied by the hosted platform, and plays complete seeded
-games without spectator delays. At each simultaneous turn, it records every
-seat's hosted system and user prompts and a scripted decision accepted by the
-game's reply parser. Parsed transmissions and confirmations resolve in the
-same order as the hosted server. Even seats use `quoter`; odd seats use
-`shark`. Whole games stay in one split. The output manifest records source
-revision, variant, scores, turns, and row counts. Existing output directories
-are never overwritten.
+Output contains private `trajectories.jsonl`, `execution.jsonl`, and a manifest. It records exact prompts and hashes,
+proposals, parsed actions, actual events, before/after states, outcomes, source revision, and wording. There are no
+automatic training labels. Independent review in Metta controls admission. All variants and wordings of a simulation
+seed share the `garble-SEED` family and must stay in one data split.
 
-Train an output with Metta post-training:
+## Native execution evidence
+
+Set `GARBLE_SOURCE_REVISION` to the qualified source revision. Set `GARBLE_ATTEMPT_TRACE_DIR` on native players and
+`GARBLE_EXECUTION_TRACE_DIR` on the host to separate private output directories. Files are exclusively created with mode
+`0600`. Player capture records requests before transport, raw responses, parsing outcomes, and exact prompt hashes. Host
+capture records proposals, parsed/executed actions, private observations, fallback status, events, and state
+transitions. Existing retries, timeouts, and fallbacks are preserved.
+
+These files contain private game information and operator instructions. Keep them out of public replays. Missing call
+IDs or behavior log probabilities remain null; capture does not invent provider evidence.
+
+## Ordinary Python players
+
+Set `POC_CAPTURE_TRAINING=1` and `POC_SOURCE_REVISION` to capture every attempt, including rejected decisions. A private
+local journal survives generation or parsing failure. Complete episodes upload a version-2 player artifact with raw
+responses and host execution acknowledgements. `GARBLE_RULES_FILE` and `PLAYER_PROMPT` still affect actual prompts and
+their hashes.
+
+Export ten or more complete seed families, with all five seat artifacts:
 
 ```sh
-nix develop -c uv run --package metta-posttrain --extra train \
-  python -m metta_posttrain.train --dataset /tmp/garble-standard \
-  --output /tmp/garble-adapter --model Qwen/Qwen3-0.6B \
-  --max-steps 100 --max-length 4096
+python players/ordinary/export.py /tmp/garble-candidates /tmp/garble-runs \
+  --source-revision QUALIFIED_COMMIT --source canned
 ```
 
-Ten complete games per variant yielded 480 training and 120 validation
-examples for Standard and Storm, and 720 and 180 for Long Session. All 2,100
-examples fit the Qwen2.5-0.5B-Instruct tokenizer in 4,096 tokens; the maximum
-was 3,823. These examples distill scripted teachers; they do not establish
-stronger league play.
-One CPU optimizer step per variant with a local tiny model included every
-example and reduced heldout loss, verifying the Metta post-training path.
+This produces candidates for independent review, not `train.jsonl` or `validation.jsonl`. Host rejection or
+normalization cannot become a successful imitation label. Held-out wording is rejected by both candidate exporters.
+Retain the host execution directory alongside captured artifacts for review against actual game events.
+
+## Evaluation
+
+Use `tools/test_prompt_games.py` for complete language-bridge games and canonical comparisons.
+`tools/test_export_posttrain.py` compares source candidates against the original exporter.
+`tools/test_native_prompts.py` exercises real native players against a closed inference endpoint using published game
+budgets. `tools/test_ordinary_capture.py` exercises ten full ordinary-player episodes through capture and candidate
+export.
+
+Measure canonical equality, wording coverage, private-view isolation, action normalization, fallback rate, prompt
+hashes, and event/outcome joins. Closed-endpoint checks exercise transport failure; they do not measure model skill.
+Compare trained policies on matched held-out seeds and wordings before claiming reduced collapse or better play. No
+learning improvement is established by these checks.

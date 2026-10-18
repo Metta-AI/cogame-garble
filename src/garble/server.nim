@@ -21,7 +21,7 @@
 ##                   {"type":"decision","turn":N,"action":{...}}
 ##   game -> player: {"type":"turn","turn":N,"view":{...},"timeout_ms":N}
 
-import ./prompts
+import ./[prompts, evidence]
 
 import
   std/[json, locks, os, sets, strutils, tables, times],
@@ -47,6 +47,7 @@ type
     pendingTurn: int
     pendingDecisions: Table[int, Decision]
     pendingSources: Table[int, string]
+    pendingProposals: JsonNode
     playerSockets: Table[int, WebSocket]
     socketSlots: Table[WebSocket, int]
     globalSockets: HashSet[WebSocket]
@@ -277,6 +278,16 @@ proc sayLine(sim: Sim, seat: int, decision: Decision): string =
 proc playEpisode(runtimeConfig: RuntimeConfig) {.gcsafe.} =
   {.gcsafe.}:
     let config = state.config
+    let traceDir = getEnv("GARBLE_EXECUTION_TRACE_DIR")
+    let tracePath = traceDir / "execution.jsonl"
+    if traceDir.len > 0:
+      writePrivate(tracePath, "")
+      writePrivate(traceDir / "manifest.json", $ %*{
+        "schema_version": 1, "game": "garble",
+        "source_revision": getEnv("GARBLE_SOURCE_REVISION"),
+        "prompt_selection": state.selection.selectionMetadata(),
+        "config": parseJson(runtimeConfig.config)
+      })
     let gameStart = epochTime()
     let connectDeadline = gameStart + config.playerConnectTimeoutSeconds
 
@@ -359,6 +370,7 @@ proc playEpisode(runtimeConfig: RuntimeConfig) {.gcsafe.} =
         state.pendingTurn = simCopy.turn
         state.pendingDecisions.clear()
         state.pendingSources.clear()
+        state.pendingProposals = newJArray()
         for seat in 0 ..< Seats:
           if state.playerSockets.hasKey(seat):
             state.playerSockets[seat].send($ %*{
@@ -384,6 +396,10 @@ proc playEpisode(runtimeConfig: RuntimeConfig) {.gcsafe.} =
       var decisions = newSeq[Decision](Seats)
       var wasScripted = newSeq[bool](Seats)
       var accepted = newSeq[bool](Seats)
+      var executed = newSeq[Decision](Seats)
+      var turnEvents = newJArray()
+      var executionStart: int
+      var beforeState: JsonNode
       withLock stateLock:
         for seat in 0 ..< Seats:
           if state.pendingDecisions.hasKey(seat):
@@ -397,6 +413,10 @@ proc playEpisode(runtimeConfig: RuntimeConfig) {.gcsafe.} =
         state.pendingTurn = -1
 
       withLock stateLock:
+        executionStart = state.sim.events.len
+        beforeState = state.sim.tableStateJson()
+        for seat in 0 ..< Seats:
+          executed[seat] = decisions[seat]
         ## Transmit, in seat order.
         for seat in 0 ..< Seats:
           let decision = decisions[seat]
@@ -409,6 +429,9 @@ proc playEpisode(runtimeConfig: RuntimeConfig) {.gcsafe.} =
               "); using the scripted fallback"
             let fallback = scriptedAction(state.sim, seat, skQuoter)
             state.sim.applySay(seat, fallback.channel, fallback.text, "", true)
+            executed[seat].channel = fallback.channel
+            executed[seat].text = fallback.text
+            executed[seat].notes = ""
             wasScripted[seat] = true
             accepted[seat] = false
           state.broadcastLocked()
@@ -425,14 +448,36 @@ proc playEpisode(runtimeConfig: RuntimeConfig) {.gcsafe.} =
             ## An inadmissible confirm is a legal move that voids; only a
             ## malformed one lands here, and it costs the seat its confirm.
             echo "garble: confirm rejected (", error.msg, ")"
+            executed[seat].hasConfirm = false
+            accepted[seat] = false
           state.broadcastLocked()
         state.sim.endTurn()
         state.broadcastLocked()
+        for index in executionStart ..< state.sim.events.len:
+          turnEvents.add(state.sim.events[index].eventToJson())
+        if traceDir.len > 0:
+          var actions = newJArray()
+          for seat in 0 ..< Seats:
+            actions.add(%*{
+              "seat": seat, "private_view": simCopy.seatDecisionView(seat),
+              "parsed_action": decisionJson(simCopy, decisions[seat]),
+              "executed_action": decisionJson(simCopy, executed[seat]),
+              "accepted": accepted[seat], "scripted": wasScripted[seat]
+            })
+          appendPrivate(tracePath, %*{
+            "turn": simCopy.turn, "prompt_selection": state.selection.selectionMetadata(),
+            "proposals": state.pendingProposals, "actions": actions,
+            "before": beforeState, "after": state.sim.tableStateJson(), "events": turnEvents
+          })
         for seat in 0 ..< Seats:
           if state.playerSockets.hasKey(seat):
             state.playerSockets[seat].send($ %*{
               "type": "decision_result", "turn": simCopy.turn,
-              "accepted": accepted[seat]
+              "accepted": accepted[seat],
+              "parsed_action": decisionJson(simCopy, decisions[seat]),
+              "executed_action": decisionJson(simCopy, executed[seat]),
+              "scripted": wasScripted[seat],
+              "prompt_selection": state.selection.selectionMetadata()
             })
 
       ## Pace so a spectator can read the turn that just landed.
@@ -591,6 +636,9 @@ proc websocketHandler(
               let source = payload{"source"}.getStr("player")
               if source notin ["player", "scripted", "fallback"]:
                 raise newException(GarbleError, "unknown decision source")
+              state.pendingProposals.add(%*{
+                "seat": slot, "turn": turn, "source": source, "action": action
+              })
               state.pendingDecisions[slot] = parseDecision(state.sim, slot,
                 action)
               state.pendingSources[slot] = source

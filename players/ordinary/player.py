@@ -22,18 +22,25 @@ def baseline_action(view: dict, shark: bool) -> dict:
     text = ""
     if view["airtime"] >= 30:
         if units[surplus] >= 3:
-            fields = ("SELL", min(5, units[surplus]), COMMODITIES[surplus],
-                      min(99, prices[surplus] + 3))
+            fields = ("SELL", min(5, units[surplus]), COMMODITIES[surplus], min(99, prices[surplus] + 3))
         elif units[demand] < view["quota"]:
-            fields = ("BUY", min(5, view["quota"] - units[demand]),
-                      COMMODITIES[demand], min(99, prices[demand] + 1))
+            fields = ("BUY", min(5, view["quota"] - units[demand]), COMMODITIES[demand], min(99, prices[demand] + 1))
         else:
             fields = None
         if fields:
             verb, qty, commodity, price = fields
-            text = " ".join([verb, str(qty), *([str(qty)] if repeat else []),
-                             commodity, *([commodity] if repeat else []),
-                             "AT", str(price), *([str(price)] if repeat else [])])
+            text = " ".join(
+                [
+                    verb,
+                    str(qty),
+                    *([str(qty)] if repeat else []),
+                    commodity,
+                    *([commodity] if repeat else []),
+                    "AT",
+                    str(price),
+                    *([str(price)] if repeat else []),
+                ]
+            )
     confirm = None
     for ticket in view["tickets"]:
         heard = ticket["heard"]
@@ -42,12 +49,14 @@ def baseline_action(view: dict, shark: bool) -> dict:
         commodity = heard["commodity"]
         price = heard["price"]
         if heard["side"] == "SELL":
-            if (commodity != demand or units[commodity] >= view["quota"]
-                    or price > prices[demand] + view["premium"] - 1
-                    or (price > 0 and view["cash"] < price)):
+            if (
+                commodity != demand
+                or units[commodity] >= view["quota"]
+                or price > prices[demand] + view["premium"] - 1
+                or (price > 0 and view["cash"] < price)
+            ):
                 continue
-        elif (commodity != surplus or price < prices[surplus] + 1
-              or units[commodity] <= 0):
+        elif commodity != surplus or price < prices[surplus] + 1 or units[commodity] <= 0:
             continue
         qty = heard["qty"]
         if shark:
@@ -56,30 +65,42 @@ def baseline_action(view: dict, shark: bool) -> dict:
             prices_possible = [price, *(v for v in heard["price_neighbors"] if v >= 0)]
             qty = max(quantities) if buying else min(quantities)
             price = min(prices_possible) if buying else max(prices_possible)
-        confirm = {"ticket": ticket["id"], "side": heard["side"],
-                   "commodity": COMMODITIES[commodity], "qty": min(99, qty),
-                   "price": min(99, price)}
+        confirm = {
+            "ticket": ticket["id"],
+            "side": heard["side"],
+            "commodity": COMMODITIES[commodity],
+            "qty": min(99, qty),
+            "price": min(99, price),
+        }
         break
     return {"channel": "RADIO", "text": text, "notes": "", "confirm": confirm}
 
 
-def choose(turn: dict, generator) -> tuple[dict, str]:
-    rules_file = Path(os.environ.get("GARBLE_RULES_FILE",
-                          Path(__file__).resolve().parents[2] / "docs" / "rules.md"))
+def choose(turn: dict, generator, artifact) -> tuple[dict, str]:
+    rules_file = Path(os.environ.get("GARBLE_RULES_FILE", Path(__file__).resolve().parents[2] / "docs" / "rules.md"))
     turn["system"] = turn["prompt_introduction"] + "\n\n" + rules_file.read_text()
-    turn["user"] = json.dumps(turn["view"], separators=(",", ":"),
-                              ensure_ascii=False) + "\n" + \
-        os.environ.get("PLAYER_PROMPT", "")
+    turn["user"] = (
+        json.dumps(turn["view"], separators=(",", ":"), ensure_ascii=False) + "\n" + os.environ.get("PLAYER_PROMPT", "")
+    )
+    if artifact:
+        artifact.begin(turn, "trained" if generator else "canned")
     if generator:
-        completion = generator([
-            {"role": "system", "content": turn["system"]},
-            {"role": "user", "content": turn["user"]},
-        ])
+        completion = generator(
+            [
+                {"role": "system", "content": turn["system"]},
+                {"role": "user", "content": turn["user"]},
+            ]
+        )
+        if artifact:
+            artifact.response(turn["turn"], completion)
         action = json.loads(completion)
         if not isinstance(action, dict):
             raise ValueError("trained Garble decision must be a JSON object")
         return action, "trained"
-    return baseline_action(turn["view"], False), "canned"
+    action = baseline_action(turn["view"], False)
+    if artifact:
+        artifact.response(turn["turn"], json.dumps(action))
+    return action, "canned"
 
 
 def main() -> None:
@@ -88,9 +109,7 @@ def main() -> None:
     adapter = os.environ.get("POC_ADAPTER_DIR")
     generator = None
     if adapter:
-        from pathlib import Path
-
-        from posttrain import TransformersGenerator
+        from posttrain import TransformersGenerator  # noqa: PLC0415 -- optional model runtime
 
         generator = TransformersGenerator(Path(adapter))
     backend = "trained" if adapter else "canned"
@@ -107,15 +126,13 @@ def main() -> None:
         frame = json.loads(data)
         kind = frame["type"]
         if kind == "turn":
-            action, source = choose(frame, generator)
+            action, source = choose(frame, generator, artifact)
             pending[frame["turn"]] = (frame, action, source)
-            socket.send(json.dumps({"type": "decision", "turn": frame["turn"],
-                                    "source": "player", "action": action}))
+            socket.send(json.dumps({"type": "decision", "turn": frame["turn"], "source": "player", "action": action}))
         elif kind == "decision_result":
             turn, action, source = pending.pop(frame["turn"])
-            if artifact and frame["accepted"]:
-                artifact.record(turn["system"], turn["user"], action, source,
-                                frame["turn"])
+            if artifact:
+                artifact.acknowledge(frame)
         elif kind == "final":
             if pending:
                 raise RuntimeError("Garble ended with unacknowledged decisions")
@@ -123,8 +140,7 @@ def main() -> None:
                 artifact.upload(frame["scores"])
             break
     socket.close()
-    print(f"Garble ordinary player finished: slot={slot} backend={backend}",
-          flush=True)
+    print(f"Garble ordinary player finished: slot={slot} backend={backend}", flush=True)
 
 
 if __name__ == "__main__":

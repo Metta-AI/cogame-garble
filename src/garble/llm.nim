@@ -11,10 +11,10 @@
 ## fallback. Quoter and shark are also fieldable scripted player policies.
 
 import
-  std/[json, math, os, strutils, unicode],
+  std/[json, math, os, strutils, unicode, times],
   bitworld/runtime,
   curly,
-  sim, prompts
+  sim, prompts, evidence
 
 const
   AnthropicUrl = "https://api.anthropic.com/v1/messages"
@@ -593,8 +593,39 @@ proc choosePromptAction*(client: LlmClient, view: JsonNode, prompt: string,
   var request = client.requestFor(system, user, -1)
   if client.transport == ltSidecar:
     request.headers["x-coworld-player-slot"] = $slot
-  let response = client.curl.post(request.url, request.headers, request.body,
-    timeoutSeconds)
-  result = extractJsonObject(client.textOf(response, "", request.url))
-  if result.kind != JObject:
-    raise newException(GarbleError, "model decision must be an object")
+  let destination = getEnv("GARBLE_ATTEMPT_TRACE_DIR")
+  let identity = $view["turn"].getInt() & "-" & $slot
+  let started = epochTime()
+  var phase = "request"
+  var raw = newJNull()
+  var text = ""
+  var status = 0
+  var completed = false
+  if destination.len > 0:
+    let model = if client.transport == ltBedrock: client.bedrockModels[client.bedrockModel] else: client.model
+    writePrivate(destination / (identity & ".jsonl"), $(%*{
+      "event_type": "attempt_started", "visibility": "private", "attempt_id": identity,
+      "source_revision": getEnv("GARBLE_SOURCE_REVISION"), "seat": slot,
+      "turn": view["turn"], "prompt_surface": "native",
+      "prompt": [{"role": "system", "content": system}, {"role": "user", "content": user}],
+      "prompt_template": selection.promptMetadata(system, user),
+      "request": {"transport": $client.transport, "model": model, "body": parseJson(request.body)}}) & "\n")
+  try:
+    let response = client.curl.post(request.url, request.headers, request.body, timeoutSeconds)
+    phase = "response"
+    raw = %response.body
+    status = response.code
+    text = client.textOf(response, "", request.url)
+    phase = "parse"
+    result = extractJsonObject(text)
+    if result.kind != JObject:
+      raise newException(GarbleError, "model decision must be an object")
+    completed = true
+  finally:
+    if destination.len > 0:
+      appendPrivate(destination / (identity & ".jsonl"), %*{
+        "event_type": "attempt_finished", "attempt_id": identity, "phase": phase,
+        "completed": completed, "raw_response": raw, "response": text,
+        "http_status": status, "parsed_action": (if completed: result else: newJNull()),
+        "latency_ms": int((epochTime() - started) * 1000.0),
+        "platform_call_id": newJNull(), "behavior_logprobs": newJNull()})
