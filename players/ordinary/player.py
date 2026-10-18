@@ -66,7 +66,7 @@ def baseline_action(view: dict, shark: bool) -> dict:
 def choose(turn: dict, generator) -> tuple[dict, str]:
     rules_file = Path(os.environ.get("GARBLE_RULES_FILE",
                           Path(__file__).resolve().parents[2] / "docs" / "rules.md"))
-    turn["system"] = "Play Garble. Submit one complete decision as JSON.\n\n" + rules_file.read_text()
+    turn["system"] = turn["prompt_introduction"] + "\n\n" + rules_file.read_text()
     turn["user"] = json.dumps(turn["view"], separators=(",", ":"),
                               ensure_ascii=False) + "\n" + \
         os.environ.get("PLAYER_PROMPT", "")

@@ -3,7 +3,7 @@
 ## replay derivation, endings, the results shape, and the two name spaces.
 
 import std/[json, math, random, sets, strutils, unicode, unittest]
-import garble/[llm, sim]
+import garble/[llm, sim, prompts]
 
 proc fixtureConfig(turns = 12, seed = 0, noiseScale = 1.0): GameConfig =
   result = defaultGameConfig()
@@ -765,7 +765,7 @@ suite "name spaces":
     sim.endTurn()
     sim.beginTurn()
     for seat in 0 ..< Seats:
-      let system = systemPrompt(sim.names[seat])
+      let system = systemPrompt(sim.names[seat], PromptSelection())
       let view = sim.seatDecisionView(seat)
       check sim.names[seat] in system
       check view["alias"].getStr() == sim.names[seat]

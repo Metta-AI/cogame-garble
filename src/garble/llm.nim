@@ -14,7 +14,7 @@ import
   std/[json, math, os, strutils, unicode],
   bitworld/runtime,
   curly,
-  sim
+  sim, prompts
 
 const
   AnthropicUrl = "https://api.anthropic.com/v1/messages"
@@ -348,10 +348,8 @@ proc scriptedDecisionFromView*(view: JsonNode, kind: ScriptKind): JsonNode =
 
 # ---- Prompt building --------------------------------------------------------
 
-proc systemPrompt*(alias: string): string =
-  "You are " & alias &
-    ", a cog trading commodities with four other cogs over a NOISY " &
-    "exchange." & """
+proc systemPrompt*(alias: string, selection: PromptSelection): string =
+  selection.nativeIntroduction(alias) & """
 
 Rules:
 - Four commodities: ORE, OAT, TIN, TAR. Prices are public and move every
@@ -587,8 +585,8 @@ proc parseDecision*(sim: Sim, seat: int, payload: JsonNode): Decision =
 # ---- Ordinary player inference ---------------------------------------------
 
 proc choosePromptAction*(client: LlmClient, view: JsonNode, prompt: string,
-    timeoutSeconds, slot: int): JsonNode =
-  let system = systemPrompt(view["alias"].getStr())
+    timeoutSeconds, slot: int, selection: PromptSelection): JsonNode =
+  let system = systemPrompt(view["alias"].getStr(), selection)
   let user = $view & "\n\n" & operatorBlock(prompt) &
     "Reply with ONLY a JSON object containing channel, text, confirm " &
     "(an object or null), and notes."
