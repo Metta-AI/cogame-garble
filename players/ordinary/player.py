@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import os
-from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
 import websocket
@@ -22,9 +21,19 @@ def baseline_action(view: dict, shark: bool) -> dict:
     text = ""
     if view["airtime"] >= 30:
         if units[surplus] >= 3:
-            fields = ("SELL", min(5, units[surplus]), COMMODITIES[surplus], min(99, prices[surplus] + 3))
+            fields = (
+                "SELL",
+                min(5, units[surplus]),
+                COMMODITIES[surplus],
+                min(99, prices[surplus] + 3),
+            )
         elif units[demand] < view["quota"]:
-            fields = ("BUY", min(5, view["quota"] - units[demand]), COMMODITIES[demand], min(99, prices[demand] + 1))
+            fields = (
+                "BUY",
+                min(5, view["quota"] - units[demand]),
+                COMMODITIES[demand],
+                min(99, prices[demand] + 1),
+            )
         else:
             fields = None
         if fields:
@@ -56,7 +65,9 @@ def baseline_action(view: dict, shark: bool) -> dict:
                 or (price > 0 and view["cash"] < price)
             ):
                 continue
-        elif commodity != surplus or price < prices[surplus] + 1 or units[commodity] <= 0:
+        elif (
+            commodity != surplus or price < prices[surplus] + 1 or units[commodity] <= 0
+        ):
             continue
         qty = heard["qty"]
         if shark:
@@ -76,14 +87,12 @@ def baseline_action(view: dict, shark: bool) -> dict:
     return {"channel": "RADIO", "text": text, "notes": "", "confirm": confirm}
 
 
-def choose(turn: dict, generator, artifact) -> tuple[dict, str]:
-    rules_file = Path(os.environ.get("GARBLE_RULES_FILE", Path(__file__).resolve().parents[2] / "docs" / "rules.md"))
-    turn["system"] = turn["prompt_introduction"] + "\n\n" + rules_file.read_text()
+def choose(turn: dict, generator) -> tuple[dict, str]:
     turn["user"] = (
-        json.dumps(turn["view"], separators=(",", ":"), ensure_ascii=False) + "\n" + os.environ.get("PLAYER_PROMPT", "")
+        json.dumps(turn["view"], separators=(",", ":"), ensure_ascii=False)
+        + "\n"
+        + os.environ.get("PLAYER_PROMPT", "")
     )
-    if artifact:
-        artifact.begin(turn, "trained" if generator else "canned")
     if generator:
         completion = generator(
             [
@@ -91,16 +100,11 @@ def choose(turn: dict, generator, artifact) -> tuple[dict, str]:
                 {"role": "user", "content": turn["user"]},
             ]
         )
-        if artifact:
-            artifact.response(turn["turn"], completion)
         action = json.loads(completion)
         if not isinstance(action, dict):
             raise ValueError("trained Garble decision must be a JSON object")
         return action, "trained"
-    action = baseline_action(turn["view"], False)
-    if artifact:
-        artifact.response(turn["turn"], json.dumps(action))
-    return action, "canned"
+    return baseline_action(turn["view"], False), "canned"
 
 
 def main() -> None:
@@ -109,11 +113,17 @@ def main() -> None:
     adapter = os.environ.get("POC_ADAPTER_DIR")
     generator = None
     if adapter:
-        from posttrain import TransformersGenerator  # noqa: PLC0415 -- optional model runtime
+        from pathlib import Path
+
+        from posttrain import TransformersGenerator
 
         generator = TransformersGenerator(Path(adapter))
     backend = "trained" if adapter else "canned"
-    artifact = Capture(slot, backend) if os.environ.get("POC_CAPTURE_TRAINING") == "1" else None
+    artifact = (
+        Capture(slot, backend)
+        if os.environ.get("POC_CAPTURE_TRAINING") == "1"
+        else None
+    )
     socket = websocket.create_connection(url, timeout=60)
     socket.settimeout(None)
     pending: dict[int, tuple[dict, dict, str]] = {}
@@ -126,13 +136,29 @@ def main() -> None:
         frame = json.loads(data)
         kind = frame["type"]
         if kind == "turn":
-            action, source = choose(frame, generator, artifact)
+            action, source = choose(frame, generator)
             pending[frame["turn"]] = (frame, action, source)
-            socket.send(json.dumps({"type": "decision", "turn": frame["turn"], "source": "player", "action": action}))
+            socket.send(
+                json.dumps(
+                    {
+                        "type": "decision",
+                        "turn": frame["turn"],
+                        "source": "player",
+                        "action": action,
+                    }
+                )
+            )
         elif kind == "decision_result":
             turn, action, source = pending.pop(frame["turn"])
-            if artifact:
-                artifact.acknowledge(frame)
+            if artifact and frame["accepted"]:
+                artifact.record(
+                    turn["system"],
+                    turn["user"],
+                    action,
+                    source,
+                    frame["turn"],
+                    turn["prompt_selection"],
+                )
         elif kind == "final":
             if pending:
                 raise RuntimeError("Garble ended with unacknowledged decisions")

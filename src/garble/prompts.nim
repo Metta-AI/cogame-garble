@@ -17,7 +17,7 @@ type
     seed*: int
 
 const
-  PromptBankVersion* = "garble-rules-v1"
+  PromptBankVersion* = "garble-rules-v2"
 
 proc promptSelection*(node: JsonNode): PromptSelection =
   if node.kind != JObject:
@@ -72,5 +72,77 @@ proc ordinaryIntroduction*(selection: PromptSelection): string =
 
 const PlayerRules = staticRead("../../docs/rules.md")
 
+proc confirmationRules*(selection: PromptSelection): string =
+  case selection.selectedVariant
+  of pvPlain:
+    "A confirmation names a ticket and gives side, quantity, commodity, and price. " &
+    "The exchange enforces those confirmed terms, not the offerer's spoken terms. " &
+    "For quantity, commodity, and price, the exact spoken value is always admissible. " &
+    "A different value is admissible only when that field was spoken once and the " &
+    "value belongs to that word's published near-neighbours. Repeating a field at " &
+    "least twice binds its exact value. You may confirm a value you did not hear, " &
+    "but an inadmissible field voids the confirmation and wastes the turn."
+  of pvNumbered:
+    "1. Confirm a ticket using side, quantity, commodity, and price.\n" &
+    "2. Settlement uses your confirmed terms, not the spoken offer.\n" &
+    "3. For each quantity, commodity, or price, the exact spoken value is admissible.\n" &
+    "4. A different value is admissible only for a field spoken once, and only " &
+    "if it is a published near-neighbour of that word.\n" &
+    "5. Two or more repetitions bind the field to its exact value.\n" &
+    "6. You may assert a value you never heard; an inadmissible assertion voids " &
+    "the confirmation and spends the turn."
+  of pvQuestions:
+    "What does a confirmation contain? Ticket, side, quantity, commodity, and price. " &
+    "Which terms settle? The confirmed ones, not the spoken ones. What quantity, " &
+    "commodity, or price is admissible? The spoken value, or a published near-neighbour " &
+    "of the spoken word if that field appeared exactly once. What if it was repeated " &
+    "twice or more? Only the exact value binds. Must you have heard the asserted value? " &
+    "No, but it must be admissible. Otherwise the confirmation voids and the turn is wasted."
+  of pvReordered:
+    "Redundancy binds: repeating a quantity, commodity, or price twice or more " &
+    "permits only its exact spoken value. A field spoken once also permits values " &
+    "from that word's published near-neighbours. You may assert such a value without " &
+    "having heard it; an inadmissible assertion voids the confirmation and wastes " &
+    "the turn. Confirm by naming the ticket, side, quantity, commodity, and price. " &
+    "The exchange settles on these confirmed terms, not the offerer's spoken terms."
+  of pvHeldoutBriefing:
+    "Treat confirmation as a binding assertion of ticket, side, quantity, commodity, " &
+    "and price: settlement follows your assertion rather than the spoken offer. " &
+    "Each quantity, commodity, and price may equal its spoken value. It may differ " &
+    "only if the field occurred once and the asserted value is a published " &
+    "near-neighbour of that word. Two or more repetitions lock the exact value. " &
+    "You need not have heard the asserted value, but asserting an inadmissible " &
+    "one voids the confirmation and wastes your turn."
+  of pvHeldoutReference:
+    "Confirmation fields: ticket, side, quantity, commodity, price. Settlement " &
+    "basis: confirmed terms, not spoken terms. Quantity/commodity/price admissibility: " &
+    "exact spoken value, plus published word-neighbour values only when spoken once. " &
+    "Repetition count >= 2: exact value only. Heard-value requirement: none. " &
+    "Inadmissible assertion: confirmation void, turn wasted."
+  of pvCanonical, pvMixed:
+    raise newException(ValueError, "canonical rules retain their original text; mixed must resolve")
+
 proc ordinarySystemPrompt*(selection: PromptSelection): string =
-  selection.ordinaryIntroduction() & "\n\n" & PlayerRules
+  result = selection.ordinaryIntroduction() & "\n\n"
+  if selection.selectedVariant == pvCanonical:
+    return result & PlayerRules
+  let sections = PlayerRules.split("\n## ")
+  doAssert sections.len == 10, "update section order when the rule document changes"
+  # Keep scanner, neighbours, budgets, and examples exact; vary the binding rule
+  # and the order of complete sections without dropping game facts.
+  var order: seq[int]
+  for index in 1 ..< sections.len: order.add(index)
+  if selection.selectedVariant in {pvReordered, pvHeldoutReference}:
+    order = @[4, 3, 1, 2, 5, 6, 7, 8, 9]
+  result.add(sections[0])
+  for index in order:
+    result.add("\n## ")
+    let section = sections[index]
+    if section.startsWith("Confirming -"):
+      result.add("Confirming - binding as heard, with the redundancy shield\n\n")
+      result.add(selection.confirmationRules() & "\n\n")
+      let sideRule = section.find("`side` is never")
+      doAssert sideRule >= 0
+      result.add(section[sideRule .. ^1])
+    else:
+      result.add(section)

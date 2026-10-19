@@ -1,70 +1,52 @@
-# Prompt diversity and post-training candidates
+# Prompt diversity and training
 
-Garble has two prompt surfaces. Native players use the noisy-exchange role instructions. Ordinary Python players use
-`docs/rules.md`. Canonical selection preserves each surface's original wording.
+Bank `garble-rules-v2` offers five training wordings and two evaluation-only
+wordings. Native inference and the ordinary player share alternate explanations
+of confirmation, binding terms, and the redundancy shield. Ordinary prompts also
+vary complete section order. Scanner rules, neighbour tables, worked examples,
+private views, action grammar, and canonical messages remain unchanged.
 
-The `garble-rules-v1` bank contains five training introductions: `canonical`, `plain`, `numbered`, `questions`, and
-`reordered`. The `heldout-briefing` and `heldout-reference` introductions are evaluation-only. Rules, private
-observations, action schemas, noise, and episode budgets remain unchanged.
+Use `promptVariant`: `canonical` (default), `plain`, `numbered`, `questions`,
+`reordered`, or `mixed`. Mixed requires a nonnegative `promptSeed`; modulo five
+selects one training wording, fixed for the episode without consuming game randomness.
+`heldout-briefing` and `heldout-reference` are evaluation-only. Training resets and
+both exporters reject them.
 
-Set `promptVariant` in game configuration. `mixed` additionally requires nonnegative `promptSeed`; it selects one of the
-five training wordings for the whole episode. This seed never consumes simulation randomness. The host sends the same
-selection to native and ordinary players.
+The game sends the selected full ordinary system prompt and native prompt configuration
+to players. Deploy the game and reference players together. Rules are owned by the
+game; player Docker images no longer carry a separate rules-file override.
 
-## Source candidates
-
-Commit qualified source before exporting. The exporter runs complete manifest variants with the original quoter/shark
-teachers and simultaneous transmission/confirmation ordering:
+## Collection and exports
 
 ```sh
-nimby sync nimby.lock
+nim c -d:release --path:src -o:/tmp/garble-bridge tools/train_bridge.nim
+/tmp/garble-bridge coworld_manifest_template.json standard
 nim c -d:release --path:src -o:/tmp/garble-export tools/export_posttrain.nim
-/tmp/garble-export /tmp/garble-candidates 10 1 standard mixed 4
+/tmp/garble-export /tmp/garble-data 10 1 standard mixed 0
 ```
 
-Output contains private `trajectories.jsonl`, `execution.jsonl`, and a manifest. It records exact prompts and hashes,
-proposals, parsed actions, actual events, before/after states, outcomes, source revision, and wording. There are no
-automatic training labels. Independent review in Metta controls admission. All variants and wordings of a simulation
-seed share the `garble-SEED` family and must stay in one data split.
+The bridge accepts the complete language action, including confirmations and
+private notes. It freezes all five decisions before applying transmissions and
+confirmations. Teacher exports retain `train.jsonl`, `validation.jsonl`, and
+`manifest.json`. Mixed exports cycle through training wordings and record each
+selection and rendered-message hashes. Keep each `garble-SEED` family together
+across rule variants and wordings.
 
-## Native execution evidence
+The ordinary player retains its original version-1 accepted-decision artifact,
+with wording metadata added to new rows. Its exporter continues reading stored
+version-1 rows without that metadata. New artifacts carry hashes and selection
+into exported examples. Capture/export usage remains in
+[the ordinary player guide](players/ordinary/README.md).
 
-Set `GARBLE_SOURCE_REVISION` to the qualified source revision. Set `GARBLE_ATTEMPT_TRACE_DIR` on native players and
-`GARBLE_EXECUTION_TRACE_DIR` on the host to separate private output directories. Files are exclusively created with mode
-`0600`. Player capture records requests before transport, raw responses, parsing outcomes, and exact prompt hashes. Host
-capture records proposals, parsed/executed actions, private observations, fallback status, events, and state
-transitions. Existing retries, timeouts, and fallbacks are preserved.
+## Checks and experiments
 
-These files contain private game information and operator instructions. Keep them out of public replays. Missing call
-IDs or behavior log probabilities remain null; capture does not invent provider evidence.
+`tools/test_prompt_games.py BRIDGE` runs 30 complete wording and normalization games.
+`tools/test_export_posttrain.py EXPORTER` checks 30 complete mixed exports.
+The existing `tools/ci/player_policy_smoke.py GAME PLAYER` runs two six-turn fixtures
+to check native HTTP prompts, ordinary captured prompts, and zero fallback across
+a real mixed roster, then exports the ordinary artifacts into separate families.
+These fixtures use local inference stubs.
 
-## Ordinary Python players
-
-Set `POC_CAPTURE_TRAINING=1` and `POC_SOURCE_REVISION` to capture every attempt, including rejected decisions. A private
-local journal survives generation or parsing failure. Complete episodes upload a version-2 player artifact with raw
-responses and host execution acknowledgements. `GARBLE_RULES_FILE` and `PLAYER_PROMPT` still affect actual prompts and
-their hashes.
-
-Export ten or more complete seed families, with all five seat artifacts:
-
-```sh
-python players/ordinary/export.py /tmp/garble-candidates /tmp/garble-runs \
-  --source-revision QUALIFIED_COMMIT --source canned
-```
-
-This produces candidates for independent review, not `train.jsonl` or `validation.jsonl`. Host rejection or
-normalization cannot become a successful imitation label. Held-out wording is rejected by both candidate exporters.
-Retain the host execution directory alongside captured artifacts for review against actual game events.
-
-## Evaluation
-
-Use `tools/test_prompt_games.py` for complete language-bridge games and canonical comparisons.
-`tools/test_export_posttrain.py` compares source candidates against the original exporter.
-`tools/test_native_prompts.py` exercises real native players against a closed inference endpoint using published game
-budgets. `tools/test_ordinary_capture.py` exercises ten full ordinary-player episodes through capture and candidate
-export.
-
-Measure canonical equality, wording coverage, private-view isolation, action normalization, fallback rate, prompt
-hashes, and event/outcome joins. Closed-endpoint checks exercise transport failure; they do not measure model skill.
-Compare trained policies on matched held-out seeds and wordings before claiming reduced collapse or better play. No
-learning improvement is established by these checks.
+For training comparisons, match seeds, opponents, seats, and inference settings.
+Measure score, invalid-action rate, fallback rate, request counts, and completion
+on familiar and held-out wording. Local checks do not establish learned robustness.

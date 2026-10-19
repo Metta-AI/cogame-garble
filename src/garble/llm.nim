@@ -10,11 +10,13 @@
 ## Without a model credential the bundled prompt player sends a quoter
 ## fallback. Quoter and shark are also fieldable scripted player policies.
 
+import ./prompts
+
 import
-  std/[json, math, os, strutils, unicode, times],
+  std/[json, math, os, strutils, unicode],
   bitworld/runtime,
   curly,
-  sim, prompts, evidence
+  sim
 
 const
   AnthropicUrl = "https://api.anthropic.com/v1/messages"
@@ -349,7 +351,7 @@ proc scriptedDecisionFromView*(view: JsonNode, kind: ScriptKind): JsonNode =
 # ---- Prompt building --------------------------------------------------------
 
 proc systemPrompt*(alias: string, selection: PromptSelection): string =
-  selection.nativeIntroduction(alias) & """
+  result = selection.nativeIntroduction(alias) & """
 
 Rules:
 - Four commodities: ORE, OAT, TIN, TAR. Prices are public and move every
@@ -372,14 +374,19 @@ Rules:
   most frequently repeated number after AT as the price. `SELL 5 ORE AT 12`
   is a valid offer. So is `SELL 5 5 ORE ORE AT 12 12`, which survives one
   garble per field.
-- A deal executes when you CONFIRM someone's ticket. THE TERMS YOU CONFIRM
+"""
+  if selection.selectedVariant == pvCanonical:
+    result.add("""- A deal executes when you CONFIRM someone's ticket. THE TERMS YOU CONFIRM
   ARE WHAT THE EXCHANGE ENFORCES, not the terms they spoke. You may confirm
   a value you did not hear - but the exchange only accepts a value that the
   channel could have produced: it must equal what they said, or be a
   near-neighbour of it AND they must have said that field exactly once. If
   they repeated a field, only the exact value binds and anything else voids
   your confirm and wastes your turn.
-- Near-neighbours are fixed and public. A digit string's neighbours are:
+""")
+  else:
+    result.add("- " & selection.confirmationRules() & "\n")
+  result.add("""- Near-neighbours are fixed and public. A digit string's neighbours are:
   append a 0 (5 -> 50), drop the last digit (50 -> 5), and change the last
   digit by one (5 -> 4, 5 -> 6). Spelled numbers have at most one neighbour
   (FIVE <-> NINE, FIFTY <-> FIFTEEN, SIXTY <-> SIXTEEN, SEVENTY <->
@@ -397,7 +404,8 @@ Rules:
 
 OUTPUT FORMAT: reply with ONLY one JSON object, nothing else - no analysis,
 no explanation, no markdown fences, no text before or after the object. Your
-reply must begin with the character { and end with }."""
+reply must begin with the character { and end with }.""")
+
 
 proc operatorBlock(prompt: string): string =
   if prompt.len == 0:
@@ -593,39 +601,8 @@ proc choosePromptAction*(client: LlmClient, view: JsonNode, prompt: string,
   var request = client.requestFor(system, user, -1)
   if client.transport == ltSidecar:
     request.headers["x-coworld-player-slot"] = $slot
-  let destination = getEnv("GARBLE_ATTEMPT_TRACE_DIR")
-  let identity = $view["turn"].getInt() & "-" & $slot
-  let started = epochTime()
-  var phase = "request"
-  var raw = newJNull()
-  var text = ""
-  var status = 0
-  var completed = false
-  if destination.len > 0:
-    let model = if client.transport == ltBedrock: client.bedrockModels[client.bedrockModel] else: client.model
-    writePrivate(destination / (identity & ".jsonl"), $(%*{
-      "event_type": "attempt_started", "visibility": "private", "attempt_id": identity,
-      "source_revision": getEnv("GARBLE_SOURCE_REVISION"), "seat": slot,
-      "turn": view["turn"], "prompt_surface": "native",
-      "prompt": [{"role": "system", "content": system}, {"role": "user", "content": user}],
-      "prompt_template": selection.promptMetadata(system, user),
-      "request": {"transport": $client.transport, "model": model, "body": parseJson(request.body)}}) & "\n")
-  try:
-    let response = client.curl.post(request.url, request.headers, request.body, timeoutSeconds)
-    phase = "response"
-    raw = %response.body
-    status = response.code
-    text = client.textOf(response, "", request.url)
-    phase = "parse"
-    result = extractJsonObject(text)
-    if result.kind != JObject:
-      raise newException(GarbleError, "model decision must be an object")
-    completed = true
-  finally:
-    if destination.len > 0:
-      appendPrivate(destination / (identity & ".jsonl"), %*{
-        "event_type": "attempt_finished", "attempt_id": identity, "phase": phase,
-        "completed": completed, "raw_response": raw, "response": text,
-        "http_status": status, "parsed_action": (if completed: result else: newJNull()),
-        "latency_ms": int((epochTime() - started) * 1000.0),
-        "platform_call_id": newJNull(), "behavior_logprobs": newJNull()})
+  let response = client.curl.post(request.url, request.headers, request.body,
+    timeoutSeconds)
+  result = extractJsonObject(client.textOf(response, "", request.url))
+  if result.kind != JObject:
+    raise newException(GarbleError, "model decision must be an object")

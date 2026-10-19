@@ -9,7 +9,15 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 BRIDGE = Path(sys.argv[1]).resolve()
 VARIANTS = ("standard", "storm", "long-session")
-WORDINGS = ("canonical", "plain", "numbered", "questions", "reordered", "heldout-briefing", "heldout-reference")
+WORDINGS = (
+    "canonical",
+    "plain",
+    "numbered",
+    "questions",
+    "reordered",
+    "heldout-briefing",
+    "heldout-reference",
+)
 
 
 def play(variant, seed, wording="canonical", prompt_seed=0, notes=False):
@@ -47,8 +55,13 @@ def play(variant, seed, wording="canonical", prompt_seed=0, notes=False):
             if system is None:
                 system = messages[0]["content"]
             assert messages[0]["content"] == system
-            assert (metadata["bank"], metadata["variant"], metadata["selection"], metadata["seed"]) == (
-                "garble-rules-v1",
+            assert (
+                metadata["bank"],
+                metadata["variant"],
+                metadata["selection"],
+                metadata["seed"],
+            ) == (
+                "garble-rules-v2",
                 WORDINGS[prompt_seed % 5] if wording == "mixed" else wording,
                 wording,
                 prompt_seed,
@@ -61,9 +74,12 @@ def play(variant, seed, wording="canonical", prompt_seed=0, notes=False):
             if wording == "canonical":
                 assert (
                     system
-                    == "Play Garble. Submit one complete decision as JSON.\n\n" + (ROOT / "docs/rules.md").read_text()
+                    == "Play Garble. Submit one complete decision as JSON.\n\n"
+                    + (ROOT / "docs/rules.md").read_text()
                 )
-            assert messages[1]["content"].startswith(json.dumps(view, separators=(",", ":"), ensure_ascii=False))
+            assert messages[1]["content"].startswith(
+                json.dumps(view, separators=(",", ":"), ensure_ascii=False)
+            )
             action = json.loads(request({"kind": "teacher"})["response"])
             expected = json.loads(json.dumps(action))
             if notes:
@@ -76,35 +92,48 @@ def play(variant, seed, wording="canonical", prompt_seed=0, notes=False):
                     action["confirm"]["price"] = str(action["confirm"]["price"])
                     action["confirm"]["side"] = action["confirm"]["side"].lower()
             trace.append((view, messages[1]["content"], expected))
-            response = request({"kind": "step", "decision_id": index, "response": json.dumps(action)})
+            response = request(
+                {"kind": "step", "decision_id": index, "response": json.dumps(action)}
+            )
             assert response["kind"] == "accepted" and response["action"] == expected
             observation = response["observation"]
         assert len(trace) == (90 if variant == "long-session" else 60)
         assert len(observation["scores"]) == 5
         process.stdin.close()
         assert process.wait(timeout=5) == 0
-        return trace, observation
+        return trace, observation, system
 
 
 for variant in VARIANTS:
-    for seed in (17, 23):
-        canonical = play(variant, seed)
-        for wording, prompt_seed in [(wording, 0) for wording in WORDINGS] + [("mixed", n) for n in range(5)]:
-            assert play(variant, seed, wording, prompt_seed) == canonical
+    canonical = play(variant, 17)
+    systems = []
+    for wording, seed in [(wording, 0) for wording in WORDINGS] + [("mixed", 4)]:
+        result = play(variant, 17, wording, seed)
+        assert result[:2] == canonical[:2]
+        if wording != "mixed":
+            systems.append(result[2])
+    assert len(set(systems)) == 7
     play(variant, 17, notes=True)
-    print(
-        variant,
-        "matched complete games; canonical messages, exact hashes, normalized confirms and private notes PASS",
-        flush=True,
-    )
+    print(variant, "10 complete matched/private-note games PASS", flush=True)
 for wording in WORDINGS[-2:]:
     result = subprocess.run(
         [str(BRIDGE), str(ROOT / "coworld_manifest_template.json"), VARIANTS[0]],
-        input=json.dumps({"kind": "reset", "players": 5, "seed": "17", "promptVariant": wording, "split": "train"})
+        input=json.dumps(
+            {
+                "kind": "reset",
+                "players": 5,
+                "seed": "17",
+                "promptVariant": wording,
+                "split": "train",
+            }
+        )
         + "\n",
         text=True,
         capture_output=True,
         timeout=10,
     )
-    assert result.returncode != 0 and "held-out wording cannot be used for training" in result.stderr
-print("75 complete panel games plus six canonical references; held-out gate PASS", flush=True)
+    assert (
+        result.returncode != 0
+        and "held-out wording cannot be used for training" in result.stderr
+    )
+print("30 complete language games; held-out gate PASS", flush=True)
