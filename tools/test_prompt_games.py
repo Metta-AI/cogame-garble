@@ -115,7 +115,8 @@ for variant in VARIANTS:
     assert len(set(systems)) == 7
     play(variant, 17, notes=True)
     print(variant, "10 complete matched/private-note games PASS", flush=True)
-for wording in WORDINGS[-2:]:
+for wording, split in ((wording, split) for wording in WORDINGS[-2:]
+                       for split in (None, "train", "typo")):
     result = subprocess.run(
         [str(BRIDGE), str(ROOT / "coworld_manifest_template.json"), VARIANTS[0]],
         input=json.dumps(
@@ -124,7 +125,7 @@ for wording in WORDINGS[-2:]:
                 "players": 5,
                 "seed": "17",
                 "promptVariant": wording,
-                "split": "train",
+                **({"split": split} if split is not None else {}),
             }
         )
         + "\n",
@@ -134,6 +135,6 @@ for wording in WORDINGS[-2:]:
     )
     assert (
         result.returncode != 0
-        and "held-out wording cannot be used for training" in result.stderr
+        and "held-out wording requires an explicit evaluation split" in result.stderr
     )
 print("30 complete language games; held-out gate PASS", flush=True)

@@ -43,8 +43,9 @@ when isMainModule:
       doAssert request["players"].getInt() == Seats
       selection = promptSelection(request)
       if selection.selectedVariant in {pvHeldoutBriefing, pvHeldoutReference} and
-          request.hasKey("split") and request["split"].getStr() == "train":
-        raise newException(ValueError, "held-out wording cannot be used for training")
+          (not request.hasKey("split") or
+          request["split"].getStr() notin ["evaluation", "validation", "test"]):
+        raise newException(ValueError, "held-out wording requires an explicit evaluation split")
       let runtime = copy(variantConfig)
       runtime["seed"] = %seedOf(request["seed"].getStr())
       runtime["tokens"] = newJArray()
