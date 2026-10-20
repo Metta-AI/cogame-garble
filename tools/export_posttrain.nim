@@ -70,7 +70,8 @@ when isMainModule:
         let system = selection.ordinarySystemPrompt()
         let user = $view & "\n" & OperatorPrompt
         rows.add($(%*{
-          "episode_id": "garble-" & variant & "-" & $seed & "-" & $selection.selectedVariant,
+          "episode_id": "garble-" & variant & "-" & $seed & "-" & $selection.variant & "-" &
+            $selection.selectedVariant & "-" & $selection.seed,
           "seed": "garble-" & $seed,
           "prompt_template": selection.promptMetadata(system, user),
           "decision_id": rows.len,

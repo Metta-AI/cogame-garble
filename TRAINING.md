@@ -30,7 +30,7 @@ private notes. It freezes all five decisions before applying transmissions and
 confirmations. Teacher exports retain `train.jsonl`, `validation.jsonl`, and
 `manifest.json`. Mixed exports cycle through training wordings separately within
 each split and record each selection and rendered-message hashes. Episode IDs
-include wording to distinguish matched collections. Keep each `garble-SEED` family together
+include requested selection, resolved wording, and prompt seed to distinguish matched collections. Keep each `garble-SEED` family together
 across rule variants and wordings.
 
 The ordinary player retains its original version-1 accepted-decision artifact,
