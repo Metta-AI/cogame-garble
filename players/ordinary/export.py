@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import zipfile
@@ -20,7 +21,7 @@ def export(
         raise ValueError("validation modulus must be at least two")
     splits: dict[str, list[str]] = {"train": [], "validation": []}
     episodes: list[dict] = []
-    seeds: set[int] = set()
+    episode_ids: set[str] = set()
     for run in runs:
         config = json.loads((run / "config.json").read_text())
         results = json.loads((run / "results.json").read_text())
@@ -30,9 +31,6 @@ def export(
             "heldout-reference",
         ):
             raise ValueError("held-out wording is evaluation-only")
-        if seed in seeds:
-            raise ValueError(f"duplicate game seed {seed}")
-        seeds.add(seed)
         if results["reason"] != "complete":
             raise ValueError(f"incomplete game {run}")
         split = "validation" if seed % validation_modulus == 0 else "train"
@@ -40,7 +38,12 @@ def export(
         for artifact in sorted(run.glob("policy_artifact_*.zip")):
             slot = int(artifact.stem.removeprefix("policy_artifact_"))
             with zipfile.ZipFile(artifact) as archive:
-                trajectory = json.loads(archive.read("trajectory.json"))
+                content = archive.read("trajectory.json")
+                trajectory = json.loads(content)
+            episode_id = f"garble-{seed}-seat-{slot}-{hashlib.sha256(content).hexdigest()}"
+            if episode_id in episode_ids:
+                raise ValueError(f"duplicate training capture {artifact}")
+            episode_ids.add(episode_id)
             if (
                 trajectory["schema_version"] != 1
                 or trajectory["game"] != "garble"
@@ -59,7 +62,7 @@ def export(
                 if row["source"] != source:
                     continue
                 example = {
-                    "episode_id": f"garble-{seed}-seat-{slot}",
+                    "episode_id": episode_id,
                     "seed": f"garble-{seed}",
                     "decision_id": row["decision_id"],
                     "prompt": row["prompt"],
