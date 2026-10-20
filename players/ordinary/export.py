@@ -40,7 +40,9 @@ def export(
             with zipfile.ZipFile(artifact) as archive:
                 content = archive.read("trajectory.json")
                 trajectory = json.loads(content)
-            episode_id = f"garble-{seed}-seat-{slot}-{hashlib.sha256(content).hexdigest()}"
+            episode_id = (
+                f"garble-{seed}-seat-{slot}-{hashlib.sha256(content).hexdigest()}"
+            )
             if episode_id in episode_ids:
                 raise ValueError(f"duplicate training capture {artifact}")
             episode_ids.add(episode_id)
