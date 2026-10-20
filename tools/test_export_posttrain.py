@@ -18,13 +18,6 @@ with tempfile.TemporaryDirectory() as directory:
             check=True,
         )
         manifest = json.loads((output / "manifest.json").read_text())
-        assert [run["prompt_selection"]["variant"] for run in manifest["runs"]] == [
-            "canonical",
-            "plain",
-            "numbered",
-            "questions",
-            "reordered",
-        ] * 2
         families, counts = {}, {}
         for split in ("train", "validation"):
             rows = [
@@ -33,6 +26,14 @@ with tempfile.TemporaryDirectory() as directory:
             ]
             assert len(rows) == manifest[split + "_examples"] > 0
             families[split] = {row["seed"] for row in rows}
+            if split == "train":
+                assert {row["prompt_template"]["variant"] for row in rows} == {
+                    "canonical",
+                    "plain",
+                    "numbered",
+                    "questions",
+                    "reordered",
+                }
             for row in rows:
                 counts[row["seed"]] = counts.get(row["seed"], 0) + 1
                 assert row["prompt_template"]["bank"] == "garble-rules-v2"

@@ -37,9 +37,13 @@ when isMainModule:
     trainRows: seq[string]
     validationRows: seq[string]
     runs = newJArray()
+    wordingCounts: array[2, int]
   for seed in firstSeed ..< firstSeed + games:
     var selection = configured
-    if selection.variant == pvMixed: selection.seed += seed - firstSeed
+    let partition = ord(seed mod 5 == 0)
+    if selection.variant == pvMixed:
+      selection.seed += wordingCounts[partition]
+    inc wordingCounts[partition]
     var config = defaultGameConfig()
     let runtimeConfig = copy(variantConfig)
     runtimeConfig["tokens"] = newJArray()
@@ -66,7 +70,7 @@ when isMainModule:
         let system = selection.ordinarySystemPrompt()
         let user = $view & "\n" & OperatorPrompt
         rows.add($(%*{
-          "episode_id": "garble-" & variant & "-" & $seed,
+          "episode_id": "garble-" & variant & "-" & $seed & "-" & $selection.selectedVariant,
           "seed": "garble-" & $seed,
           "prompt_template": selection.promptMetadata(system, user),
           "decision_id": rows.len,

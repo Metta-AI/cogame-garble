@@ -28,8 +28,9 @@ nim c -d:release --path:src -o:/tmp/garble-export tools/export_posttrain.nim
 The bridge accepts the complete language action, including confirmations and
 private notes. It freezes all five decisions before applying transmissions and
 confirmations. Teacher exports retain `train.jsonl`, `validation.jsonl`, and
-`manifest.json`. Mixed exports cycle through training wordings and record each
-selection and rendered-message hashes. Keep each `garble-SEED` family together
+`manifest.json`. Mixed exports cycle through training wordings separately within
+each split and record each selection and rendered-message hashes. Episode IDs
+include wording to distinguish matched collections. Keep each `garble-SEED` family together
 across rule variants and wordings.
 
 The ordinary player retains its original version-1 accepted-decision artifact,
