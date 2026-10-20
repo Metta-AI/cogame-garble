@@ -21,6 +21,8 @@
 ##                   {"type":"decision","turn":N,"action":{...}}
 ##   game -> player: {"type":"turn","turn":N,"view":{...},"timeout_ms":N}
 
+import ./prompts
+
 import
   std/[json, locks, os, sets, strutils, tables, times],
   bitworld/runtime,
@@ -39,6 +41,7 @@ const
 
 type
   GameState = object
+    selection: PromptSelection
     config: GameConfig
     sim: Sim
     pendingTurn: int
@@ -362,6 +365,9 @@ proc playEpisode(runtimeConfig: RuntimeConfig) {.gcsafe.} =
               "type": "turn",
               "turn": simCopy.turn,
               "timeout_ms": effective * 1000,
+              "prompt_config": {"promptVariant": $state.selection.variant, "promptSeed": state.selection.seed},
+              "system": state.selection.ordinarySystemPrompt(),
+              "prompt_selection": state.selection.selectionMetadata(),
               "view": simCopy.seatDecisionView(seat)
             })
             waitingSeats.add(seat)
@@ -644,6 +650,7 @@ proc runReplayServer*(runtimeConfig: RuntimeConfig) =
 proc runGameServer*(config: GameConfig, runtimeConfig: RuntimeConfig) =
   if config.tokens.len != config.players.len:
     raise newException(GarbleError, "tokens and players must align")
+  state.selection = promptSelection(parseJson(runtimeConfig.config))
   state.config = config
   state.sim = initSim(config)
   state.pendingTurn = -1

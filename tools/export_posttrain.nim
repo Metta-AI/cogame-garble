@@ -2,21 +2,23 @@
 ## Usage: nim r --path:src tools/export_posttrain.nim OUTPUT GAMES [FIRST_SEED] [VARIANT]
 
 import std/[json, os, osproc, strutils]
-import garble/[llm, sim]
+import garble/[llm, sim, prompts]
 
 const OperatorPrompt = "Choose legal transmissions and confirmations to maximize your score over the complete game."
-const PlayerRules = staticRead(currentSourcePath().parentDir().parentDir() /
-  "docs" / "rules.md")
 const Variants = ["standard", "storm", "long-session"]
 
 when isMainModule:
   let args = commandLineParams()
-  if args.len notin 2 .. 4:
-    quit("usage: export_posttrain OUTPUT GAMES [FIRST_SEED] [VARIANT]", 1)
+  if args.len notin [2, 3, 4, 6]:
+    quit("usage: export_posttrain OUTPUT GAMES [FIRST_SEED] [VARIANT [PROMPT_VARIANT PROMPT_SEED]]", 1)
   let output = args[0]
   let games = parseInt(args[1])
   let firstSeed = if args.len >= 3: parseInt(args[2]) else: 1
-  let variant = if args.len == 4: args[3] else: Variants[0]
+  let variant = if args.len >= 4: args[3] else: Variants[0]
+  let configured = promptSelection(if args.len == 6:
+    %*{"promptVariant": args[4], "promptSeed": parseInt(args[5])} else: newJObject())
+  if configured.selectedVariant in {pvHeldoutBriefing, pvHeldoutReference}:
+    raise newException(ValueError, "held-out wording is evaluation-only")
   if games < 10 or firstSeed < 1:
     quit("at least ten games and a positive first seed are required", 1)
   if variant notin Variants:
@@ -35,7 +37,13 @@ when isMainModule:
     trainRows: seq[string]
     validationRows: seq[string]
     runs = newJArray()
+    wordingCounts: array[2, int]
   for seed in firstSeed ..< firstSeed + games:
+    var selection = configured
+    let partition = ord(seed mod 5 == 0)
+    if selection.variant == pvMixed:
+      selection.seed += wordingCounts[partition]
+    inc wordingCounts[partition]
     var config = defaultGameConfig()
     let runtimeConfig = copy(variantConfig)
     runtimeConfig["tokens"] = newJArray()
@@ -59,13 +67,17 @@ when isMainModule:
         let parsed = parseDecision(sim, seat, completion)
         doAssert parsed == teacher
         decisions.add(parsed)
+        let system = selection.ordinarySystemPrompt()
+        let user = $view & "\n" & OperatorPrompt
         rows.add($(%*{
-          "episode_id": "garble-" & variant & "-" & $seed,
-          "seed": "garble-" & variant & "-" & $seed,
+          "episode_id": "garble-" & variant & "-" & $seed & "-" & $selection.variant & "-" &
+            $selection.selectedVariant & "-" & $selection.seed,
+          "seed": "garble-" & $seed,
+          "prompt_template": selection.promptMetadata(system, user),
           "decision_id": rows.len,
           "prompt": [
-            {"role": "system", "content": "Play Garble. Submit one complete decision as JSON.\n\n" & PlayerRules},
-            {"role": "user", "content": $view & "\n" & OperatorPrompt}
+            {"role": "system", "content": system},
+            {"role": "user", "content": user}
           ],
           "completion": [{"role": "assistant", "content": $completion}],
           "game": "garble",
@@ -86,7 +98,7 @@ when isMainModule:
       validationRows.add(rows)
     else:
       trainRows.add(rows)
-    runs.add(%*{"seed": seed, "decisions": rows.len,
+    runs.add(%*{"seed": seed, "prompt_selection": selection.selectionMetadata(), "decisions": rows.len,
       "scores": outcome["scores"], "turns_played": sim.turnsPlayed})
   writeFile(output / "train.jsonl", trainRows.join("\n") & "\n")
   writeFile(output / "validation.jsonl", validationRows.join("\n") & "\n")

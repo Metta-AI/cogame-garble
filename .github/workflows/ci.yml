@@ -185,6 +185,15 @@ jobs:
             tools/ci/player_policy_smoke.py \
             /tmp/garble-policy-game /tmp/garble-policy-player
 
+      - name: Complete prompt games and mixed exports
+        run: |
+          set -euo pipefail
+          nim c --hints:off -d:release --path:src -o:"$RUNNER_TEMP/garble-bridge" tools/train_bridge.nim
+          nim c --hints:off -d:release --path:src -o:"$RUNNER_TEMP/garble-export" tools/export_posttrain.nim
+          python tools/test_prompt_games.py "$RUNNER_TEMP/garble-bridge"
+          python tools/test_export_posttrain.py "$RUNNER_TEMP/garble-export"
+
+
   # ---------------------------------------------------------------------
   # Packaging smoke: the production image builds, and one real episode runs
   # end to end in raw docker with the certification fixture's seat mix.

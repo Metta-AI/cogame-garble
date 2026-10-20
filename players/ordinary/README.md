@@ -14,10 +14,10 @@ Set `POC_CAPTURE_TRAINING=1` and `POC_SOURCE_REVISION=<policy commit>` to upload
 
 ```bash
 python players/ordinary/export.py /tmp/garble-dataset /tmp/garble-runs --source-revision <policy-commit>
-uv run --package metta-posttrain --extra train python -m metta_posttrain.train \
-  --dataset /tmp/garble-dataset --output /tmp/garble-adapter --model /path/to/base-model \
-  --device cpu --max-steps 100 --max-length 4096 --max-eval-examples 128
 ```
+
+Use the [post-training research package](https://github.com/Metta-AI/posttraining-research/tree/main/packages/metta-posttraining)
+for current training and adapter-packaging workflows.
 
 The existing `tools/export_posttrain.nim` also exports complete scripted games without containers. The artifact exporter admits only completed games, accepted actions, a matching policy revision, and separate seed splits.
 
@@ -30,3 +30,10 @@ docker build --platform linux/amd64 -f Dockerfile.ordinary-model \
 ```
 
 The loader checks the base model hash against Metta's training manifest. Evaluate saved policies on held-out games before fielding them.
+
+The game supplies the full selected system prompt. Deploy updated game and player
+images together. New version-1 capture rows include prompt selection and message
+hashes; exports preserve these and reject held-out evaluation wordings.
+
+Ordinary export IDs include the complete capture hash. Matched wording runs may
+share a scenario seed and remain in the same split; duplicate captures are rejected.

@@ -120,6 +120,26 @@
           "type": "number",
           "minimum": 0,
           "default": 180
+        },
+        "promptVariant": {
+          "type": "string",
+          "enum": [
+            "canonical",
+            "plain",
+            "numbered",
+            "questions",
+            "reordered",
+            "heldout-briefing",
+            "heldout-reference",
+            "mixed"
+          ],
+          "default": "canonical",
+          "description": "Episode-stable wording; held-out variants are evaluation-only."
+        },
+        "promptSeed": {
+          "type": "integer",
+          "minimum": 0,
+          "default": 0
         }
       }
     },
@@ -275,7 +295,10 @@
       }
     },
     "docs": {
-      "readme": { "type": "text", "value": "Five cogs sit on one exchange with four commodities - ORE, OAT, TIN, TAR. Each holds a surplus of one and a private contract paying a premium for a different one, so there are real gains from trade. The only way to trade is to talk: a cog transmits one line per turn on the shared RADIO (four listeners) or on a private LINE to one named cog (cleaner, one listener). Every channel is noisy - words drop, swap for published near-neighbours, or vanish under a static burst, and each recipient gets its own independent garbling under a public interference meter that swells and fades. The exchange scans SELL/BUY ... AT ... out of the words and opens a ticket; a deal executes when another cog CONFIRMS it, and THE CONFIRMED TERMS BIND, not the spoken ones - so 'SELL 5 ORE AT 12' can settle as 'SELL 50 ORE AT 1'. The offerer's only defence is the redundancy shield: a field said twice binds exactly; a field said once can be confirmed as any of its near-neighbours. Repeating costs AIRTIME, metered in characters - 900 for the whole episode, plus a flat 40 per confirm - while the market walks every turn. Score is portfolio value at the horizon divided by hold-and-do-nothing value: higher is better, 1.00 is traded to no effect, and the ratio is not zero-sum. Field a policy by uploading a player image that reads the private turn view and sends a complete decision. The bundled prompt player uses PLAYER_PROMPT and its own model credential; PLAYER_SCRIPTED selects the quoter or shark baseline in the player process." },
+      "readme": {
+        "type": "text",
+        "value": "Five cogs sit on one exchange with four commodities - ORE, OAT, TIN, TAR. Each holds a surplus of one and a private contract paying a premium for a different one, so there are real gains from trade. The only way to trade is to talk: a cog transmits one line per turn on the shared RADIO (four listeners) or on a private LINE to one named cog (cleaner, one listener). Every channel is noisy - words drop, swap for published near-neighbours, or vanish under a static burst, and each recipient gets its own independent garbling under a public interference meter that swells and fades. The exchange scans SELL/BUY ... AT ... out of the words and opens a ticket; a deal executes when another cog CONFIRMS it, and THE CONFIRMED TERMS BIND, not the spoken ones - so 'SELL 5 ORE AT 12' can settle as 'SELL 50 ORE AT 1'. The offerer's only defence is the redundancy shield: a field said twice binds exactly; a field said once can be confirmed as any of its near-neighbours. Repeating costs AIRTIME, metered in characters - 900 for the whole episode, plus a flat 40 per confirm - while the market walks every turn. Score is portfolio value at the horizon divided by hold-and-do-nothing value: higher is better, 1.00 is traded to no effect, and the ratio is not zero-sum. Field a policy by uploading a player image that reads the private turn view and sends a complete decision. The bundled prompt player uses PLAYER_PROMPT and its own model credential; PLAYER_SCRIPTED selects the quoter or shark baseline in the player process."
+      },
       "pages": [
         {
           "id": "rules.md",

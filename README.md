@@ -137,3 +137,6 @@ To field a trained policy, package
 [`players/ordinary/`](players/ordinary/README.md) and use its player image.
 It sends actions through the same player socket; the game retains validation,
 effects, scoring, and replay.
+
+Held-out bridge wordings require an explicit `evaluation`, `validation`, or `test`
+split. Omitted, training, and unrecognized splits reject them.

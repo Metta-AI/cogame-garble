@@ -4,7 +4,7 @@
 import
   std/[json, options, os, strutils],
   whisky,
-  garble/llm
+  garble/[llm, prompts]
 
 const DefaultPrompt = """
 Trade toward your contract commodity and out of your surplus. Price your
@@ -58,7 +58,8 @@ when isMainModule:
               scriptedDecisionFromView(view, skQuoter)
             else:
               choosePromptAction(client, view, prompt,
-                max(1, payload["timeout_ms"].getInt() div 1000 - 1), slot)
+                max(1, payload["timeout_ms"].getInt() div 1000 - 1), slot,
+                promptSelection(payload["prompt_config"]))
           socket.send($ %*{"type": "decision", "turn": payload["turn"],
             "source": source, "action": action})
         of "final":

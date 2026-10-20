@@ -1,39 +1,53 @@
-# Metta post-training data
+# Prompt diversity and training
 
-The native simulator and published `quoter` and `shark` policies export
-supervised examples for all three certified Garble variants:
+Bank `garble-rules-v2` offers five training wordings and two evaluation-only
+wordings. Native inference and the ordinary player share alternate explanations
+of confirmation, binding terms, and the redundancy shield. Ordinary prompts also
+vary complete section order. Scanner rules, neighbour tables, worked examples,
+private views, action grammar, and canonical messages remain unchanged.
 
-```sh
-nimby sync nimby.lock
-for variant in standard storm long-session; do
-  nim r -d:release --path:src tools/export_posttrain.nim \
-    "/tmp/garble-${variant}" 10 1 "$variant"
-done
-```
+Use `promptVariant`: `canonical` (default), `plain`, `numbered`, `questions`,
+`reordered`, or `mixed`. Mixed requires a nonnegative `promptSeed`; modulo five
+selects one training wording, fixed for the episode without consuming game randomness.
+`heldout-briefing` and `heldout-reference` are evaluation-only. Training resets and
+both exporters reject them.
 
-Each run reads the variant configuration from the Coworld manifest, adds the
-per-seat tokens supplied by the hosted platform, and plays complete seeded
-games without spectator delays. At each simultaneous turn, it records every
-seat's hosted system and user prompts and a scripted decision accepted by the
-game's reply parser. Parsed transmissions and confirmations resolve in the
-same order as the hosted server. Even seats use `quoter`; odd seats use
-`shark`. Whole games stay in one split. The output manifest records source
-revision, variant, scores, turns, and row counts. Existing output directories
-are never overwritten.
+The game sends the selected full ordinary system prompt and native prompt configuration
+to players. Deploy the game and reference players together. Rules are owned by the
+game; player Docker images no longer carry a separate rules-file override.
 
-Train an output with Metta post-training:
+## Collection and exports
 
 ```sh
-nix develop -c uv run --package metta-posttrain --extra train \
-  python -m metta_posttrain.train --dataset /tmp/garble-standard \
-  --output /tmp/garble-adapter --model Qwen/Qwen3-0.6B \
-  --max-steps 100 --max-length 4096
+nim c -d:release --path:src -o:/tmp/garble-bridge tools/train_bridge.nim
+/tmp/garble-bridge coworld_manifest_template.json standard
+nim c -d:release --path:src -o:/tmp/garble-export tools/export_posttrain.nim
+/tmp/garble-export /tmp/garble-data 10 1 standard mixed 0
 ```
 
-Ten complete games per variant yielded 480 training and 120 validation
-examples for Standard and Storm, and 720 and 180 for Long Session. All 2,100
-examples fit the Qwen2.5-0.5B-Instruct tokenizer in 4,096 tokens; the maximum
-was 3,823. These examples distill scripted teachers; they do not establish
-stronger league play.
-One CPU optimizer step per variant with a local tiny model included every
-example and reduced heldout loss, verifying the Metta post-training path.
+The bridge accepts the complete language action, including confirmations and
+private notes. It freezes all five decisions before applying transmissions and
+confirmations. Teacher exports retain `train.jsonl`, `validation.jsonl`, and
+`manifest.json`. Mixed exports cycle through training wordings separately within
+each split and record each selection and rendered-message hashes. Episode IDs
+include requested selection, resolved wording, and prompt seed to distinguish matched collections. Keep each `garble-SEED` family together
+across rule variants and wordings.
+
+The ordinary player retains its original version-1 accepted-decision artifact,
+with wording metadata added to new rows. Its exporter continues reading stored
+version-1 rows without that metadata. New artifacts carry hashes and selection
+into exported examples. Capture/export usage remains in
+[the ordinary player guide](players/ordinary/README.md).
+
+## Checks and experiments
+
+`tools/test_prompt_games.py BRIDGE` runs 30 complete wording and normalization games.
+`tools/test_export_posttrain.py EXPORTER` checks 30 complete mixed exports.
+The existing `tools/ci/player_policy_smoke.py GAME PLAYER` runs two six-turn fixtures
+to check native HTTP prompts, ordinary captured prompts, and zero fallback across
+a real mixed roster, then exports the ordinary artifacts into separate families.
+These fixtures use local inference stubs.
+
+For training comparisons, match seeds, opponents, seats, and inference settings.
+Measure score, invalid-action rate, fallback rate, request counts, and completion
+on familiar and held-out wording. Local checks do not establish learned robustness.
