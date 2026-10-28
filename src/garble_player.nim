@@ -4,7 +4,7 @@
 import
   std/[json, options, os, strutils],
   whisky,
-  garble/[llm, prompts]
+  garble/[llm, prompts, training_capture]
 
 const DefaultPrompt = """
 Trade toward your contract commodity and out of your surplus. Price your
@@ -49,19 +49,30 @@ when isMainModule:
         of "turn":
           let view = payload["view"]
           var source = "player"
-          let action =
-            if kind != skNone:
-              source = "scripted"
-              scriptedDecisionFromView(view, kind)
-            elif client.disabled:
-              source = "fallback"
-              scriptedDecisionFromView(view, skQuoter)
-            else:
-              choosePromptAction(client, view, prompt,
-                max(1, payload["timeout_ms"].getInt() div 1000 - 1), slot,
-                promptSelection(payload["prompt_config"]))
-          socket.send($ %*{"type": "decision", "turn": payload["turn"],
-            "source": source, "action": action})
+          let capture = if payload{"private_capture"}.getStr() == CaptureProtocol:
+            PrivateCapture() else: nil
+          var action: JsonNode
+          try:
+            action =
+              if kind != skNone:
+                source = "scripted"
+                scriptedDecisionFromView(view, kind)
+              elif client.disabled:
+                source = "fallback"
+                scriptedDecisionFromView(view, skQuoter)
+              else:
+                choosePromptAction(client, view, prompt,
+                  max(1, payload["timeout_ms"].getInt() div 1000 - 1), slot,
+                  promptSelection(payload["prompt_config"]),
+                  capture)
+          except CatchableError:
+            if capture != nil and capture.evidence != nil and capture.evidence.kind != JNull:
+              try:
+                socket.send($ %*{"type": "private_attempt", "turn": payload["turn"],
+                  "source": source, "private_attempt": capture.evidence})
+              except CatchableError: discard
+            raise
+          socket.send($decisionFrame(payload["turn"], source, action, capture))
         of "final":
           echo "garble player: final scores ", payload{"scores"}
           break
