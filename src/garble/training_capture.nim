@@ -1,6 +1,6 @@
 ## Optional private telemetry. Socket identity and the native sim own execution;
 ## caller metadata is untrusted until an external authenticated receipt audit.
-import std/[base64, json, math, options, os, parsejson, streams, strutils, tables, unicode]
+import std/[base64, json, math, options, os, parsejson, streams, strutils, tables]
 import crunchy, curly
 import bitworld/runtime
 import ./decision_trajectory, ./sim
@@ -30,10 +30,51 @@ type
     trajectory: DecisionTrajectory
     turns: Table[int, seq[CapturedDecision]]
     physical: JsonNode
+    failed: bool
+    errors: seq[string]
+
+proc scalarUtf8*(text: string): bool =
+  ## RFC 3629: Nim's validateUtf8 alone permits encoded surrogate code points.
+  var index = 0
+  while index < text.len:
+    let first = ord(text[index])
+    var size = 1
+    if first <= 0x7f: discard
+    elif first in 0xc2 .. 0xdf: size = 2
+    elif first in 0xe0 .. 0xef: size = 3
+    elif first in 0xf0 .. 0xf4: size = 4
+    else: return false
+    if index + size > text.len: return false
+    for offset in 1 ..< size:
+      if ord(text[index + offset]) notin 0x80 .. 0xbf: return false
+    if size >= 3:
+      let second = ord(text[index + 1])
+      if first == 0xe0 and second < 0xa0 or first == 0xed and second > 0x9f or
+          first == 0xf0 and second < 0x90 or first == 0xf4 and second > 0x8f:
+        return false
+    index += size
+  true
+
+proc scalarJson*(node: JsonNode, depth = 0): bool =
+  if node == nil or depth > 64: return false
+  case node.kind
+  of JString: return scalarUtf8(node.getStr())
+  of JObject:
+    for key, value in node:
+      if not scalarUtf8(key) or not scalarJson(value, depth + 1): return false
+  of JArray:
+    for value in node:
+      if not scalarJson(value, depth + 1): return false
+  else: discard
+  true
+
+proc safeDiagnostic*(detail: string): string =
+  if scalarUtf8(detail): detail
+  else: "non-Unicode diagnostic bytes, base64=" & encode(detail)
 
 proc strictRawObject(text: string): JsonNode =
   ## Independent admission parser: the gameplay decoder remains unchanged.
-  if text.validateUtf8() != -1: raise newException(ValueError, "raw JSON is not UTF-8")
+  if not scalarUtf8(text): raise newException(ValueError, "raw JSON is not UTF-8")
   let first = text.find('{')
   let last = text.rfind('}')
   if first < 0 or last < first: raise newException(ValueError, "no raw JSON object")
@@ -76,6 +117,7 @@ proc strictRawObject(text: string): JsonNode =
       while true:
         if parser.tok != tkString: raise newException(ValueError, "JSON object key required")
         let key = parser.a
+        if not scalarUtf8(key): raise newException(ValueError, "non-Unicode decoded JSON key")
         if result.hasKey(key): raise newException(ValueError, "duplicate JSON key: " & key)
         discard parser.getTok()
         parser.eat(tkColon)
@@ -97,6 +139,7 @@ proc strictRawObject(text: string): JsonNode =
           break
         parser.eat(tkComma)
     of tkString:
+      if not scalarUtf8(parser.a): raise newException(ValueError, "non-Unicode decoded JSON string")
       result = %parser.a
       discard parser.getTok()
     of tkInt, tkFloat:
@@ -176,6 +219,9 @@ proc physicalFamily*(sim: Sim): string =
 
 proc newRuntimeCapture*(sim: Sim): RuntimeCapture =
   if getEnv(CogameSaveTrajectoryUriEnv).len == 0: return nil
+  for key in ["COWORLD_EPISODE_ID", "COWORLD_GAME_VERSION", "COWORLD_SOURCE_REVISION", "COWORLD_GAME_NAME"]:
+    if not scalarUtf8(getEnv(key)):
+      raise newException(ValueError, "non-Unicode private trajectory identity: " & key)
   let privateUri = getEnv(CogameSaveTrajectoryUriEnv)
   for publicUri in [getEnv("COGAME_RESULTS_URI"), getEnv("COGAME_SAVE_REPLAY_URI")]:
     if publicUri.len == 0: continue
@@ -228,6 +274,10 @@ proc receivedFrame*(capture: RuntimeCapture, turn, seat: int, payload: JsonNode,
     else: frame.diagnostic["proposal_gap"] = %"proposal exceeds capture byte bound"
   if payload.hasKey("private_attempt"):
     let envelope = payload["private_attempt"]
+    if not scalarJson(envelope) or (envelope.kind == JObject and (
+        envelope.hasKey("invalid_native_evidence_json_b64") or
+        envelope{"telemetry_error"}.getStr().startsWith("non-Unicode"))):
+      frame.diagnostic["non_unicode_evidence"] = %true
     let encoded = $envelope
     if encoded.len > MaxEvidenceBytes:
       frame.diagnostic["telemetry_error"] = %"private telemetry exceeds 49152 bytes"
@@ -235,10 +285,12 @@ proc receivedFrame*(capture: RuntimeCapture, turn, seat: int, payload: JsonNode,
       frame.diagnostic["oversized_bytes"] = %encoded.len
     else:
       try:
+        if not scalarJson(envelope):
+          raise newException(ValueError, "non-Unicode private telemetry; original bytes retained")
         if envelope.kind != JObject or envelope{"schema"}.getStr() != CaptureProtocol:
           raise newException(ValueError, "unknown private telemetry schema")
         for key in envelope.keys:
-          if key notin ["schema", "attempt", "request_body_b64", "telemetry_error"]:
+          if key notin ["schema", "attempt", "request_body_b64", "telemetry_error", "invalid_native_evidence_json_b64"]:
             raise newException(ValueError, "unknown private telemetry field: " & key)
         if envelope.hasKey("telemetry_error"):
           raise newException(ValueError, envelope["telemetry_error"].getStr())
@@ -268,7 +320,7 @@ proc receivedFrame*(capture: RuntimeCapture, turn, seat: int, payload: JsonNode,
           let body = decode(encodedBody)
           if encode(body) != encodedBody or body.len > MaxResponseBytes:
             raise newException(ValueError, "invalid or oversized response bytes")
-          if body.validateUtf8() == -1:
+          if scalarUtf8(body):
             if restored["raw_response"].kind != JNull and restored["raw_response"].getStr() != body:
               raise newException(ValueError, "raw response differs from received bytes")
             restored["raw_response"] = %body
@@ -294,9 +346,10 @@ proc receivedFrame*(capture: RuntimeCapture, turn, seat: int, payload: JsonNode,
         frame.diagnostic["telemetry_error"] = newJNull()
         frame.attempt = some(attempt)
       except CatchableError as error:
-        frame.diagnostic["telemetry_error"] = %error.msg
-        frame.diagnostic["invalid_private_envelope"] = copy(envelope)
-        echo "garble capture: invalid private telemetry seat ", seat, ": ", error.msg
+        frame.diagnostic["telemetry_error"] = %safeDiagnostic(error.msg)
+        if scalarJson(envelope): frame.diagnostic["invalid_private_envelope"] = copy(envelope)
+        else: frame.diagnostic["invalid_private_envelope_json_b64"] = %encode($envelope)
+        echo "garble capture: invalid private telemetry seat ", seat, ": ", safeDiagnostic(error.msg)
   decision.frames.add(frame)
   result = decision.frames.high
 
@@ -370,7 +423,7 @@ proc finishCapture*(capture: RuntimeCapture, outcome: JsonNode) =
             # fields passed strict equality. The original text stays untouched.
             attempt.parsedAction = copy(decision.actual)
           except CatchableError as error:
-            attempt.rejectionReason = some(error.msg)
+            attempt.rejectionReason = some(safeDiagnostic(error.msg))
         if attempt.accepted:
           selected = some(attempt.attemptId)
           status = asAccepted
@@ -384,11 +437,39 @@ proc finishCapture*(capture: RuntimeCapture, outcome: JsonNode) =
         status = asFallback
       decision.observation["strict_raw_fields_enforced"] = %true
       decision.observation["authenticated_receipt_audit_required"] = %true
+      var observation = decision.observation
+      var actual = decision.actual
+      var originalAttempts = newJArray()
+      for attempt in attempts: originalAttempts.add(attemptEvidenceJson(attempt))
+      let original = %*{"observation": observation, "attempts": originalAttempts,
+        "executed_action": actual, "actual_scripted": decision.fallback}
+      var unsafe = not scalarJson(original)
+      for frame in decision.frames:
+        if frame.diagnostic{"non_unicode_evidence"}.getBool(): unsafe = true
+      if unsafe:
+        let detail = "non-Unicode native evidence; original JSON bytes retained as base64; target excluded"
+        observation = %*{"capture_errors": [detail], "actual_scripted": decision.fallback,
+          "invalid_native_evidence_json_b64": encode($original)}
+        attempts = @[]
+        selected = none(string)
+        actual = newJNull()
+        if status != asFallback: status = asRejected
+        capture.failed = true
+        if capture.errors.len < 16: capture.errors.add(detail)
       capture.trajectory.recordDecision($turn & "-" & $seat, $seat,
-        decision.observation, attempts, selected, decision.actual, status,
+        observation, attempts, selected, actual, status,
         fallbackOrigin = (if decision.fallback: some("engine-fallback-or-mixed") else: none(string)))
-  capture.trajectory.finish(if outcome{"reason"}.getStr() == "complete": esCompleted else: esTruncated,
-    outcome, outcome{"scores"})
+  var privateOutcome = copy(outcome)
+  var scores = outcome{"scores"}
+  if not scalarJson(outcome):
+    capture.failed = true
+    capture.errors.add("non-Unicode native outcome; original JSON bytes retained as base64")
+    privateOutcome = %*{"invalid_native_outcome_json_b64": encode($outcome)}
+  if not scalarJson(scores): scores = newJNull()
+  if capture.failed: privateOutcome["capture_errors"] = %capture.errors
+  capture.trajectory.finish(if capture.failed: esFailed
+    elif outcome{"reason"}.getStr() == "complete": esCompleted else: esTruncated,
+    privateOutcome, scores)
   capture.trajectory.writeEventsToUri(getEnv(CogameSaveTrajectoryUriEnv))
 
 proc requestAttempt*(body: string): DecisionAttempt =
@@ -410,7 +491,7 @@ proc receivedResponse*(attempt: var DecisionAttempt, response: Response, latency
       sha256(response.body).toHex.toLowerAscii())
     return
   attempt.responseBodyB64 = some(encode(response.body))
-  if response.body.validateUtf8() == -1: attempt.rawResponse = %response.body
+  if scalarUtf8(response.body): attempt.rawResponse = %response.body
   attempt.responseComplete = some(true)
   attempt.responseReaderJoined = some(true)
   attempt.httpStatus = some(response.code)
@@ -448,13 +529,19 @@ proc receivedResponse*(attempt: var DecisionAttempt, response: Response, latency
 proc privateEnvelope*(attempt: DecisionAttempt, body: string): JsonNode =
   result = %*{"schema": CaptureProtocol, "request_body_b64": encode(body),
     "attempt": attemptEvidenceJson(attempt)}
+  let original = copy(result)
   # Exact body bytes already carry these copies. Restore only from validated
   # bytes in the game, before applying the strict evidence reader.
   result["attempt"]["prompt"] = newJNull()
   result["attempt"]["raw_response"] = newJNull()
+  if not scalarJson(original):
+    result = %*{"schema": CaptureProtocol,
+      "telemetry_error": "non-Unicode caller telemetry; original JSON bytes retained as base64; target excluded",
+      "invalid_native_evidence_json_b64": encode($original)}
   if ($result).len > MaxEvidenceBytes:
     result = %*{"schema": CaptureProtocol,
-      "telemetry_error": "caller telemetry exceeds 49152 bytes; bytes unavailable"}
+      "telemetry_error": (if not scalarJson(original): "non-Unicode caller telemetry exceeds 49152 bytes; bytes unavailable"
+        else: "caller telemetry exceeds 49152 bytes; bytes unavailable")}
 
 proc decisionFrame*(turn: JsonNode, source: string, action: JsonNode,
     capture: PrivateCapture): JsonNode =

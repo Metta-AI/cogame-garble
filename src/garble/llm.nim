@@ -610,7 +610,7 @@ proc choosePromptAction*(client: LlmClient, view: JsonNode, prompt: string,
       attempt = requestAttempt(request.body)
       capturing = true
     except CatchableError as error:
-      capture.evidence = %*{"schema": CaptureProtocol, "telemetry_error": error.msg}
+      capture.evidence = %*{"schema": CaptureProtocol, "telemetry_error": safeDiagnostic(error.msg)}
   let started = if capturing: epochTime() else: 0.0
   try:
     let response = client.curl.post(request.url, request.headers, request.body,
@@ -618,10 +618,10 @@ proc choosePromptAction*(client: LlmClient, view: JsonNode, prompt: string,
     if capturing:
       try: attempt.receivedResponse(response, (epochTime() - started) * 1000.0)
       except CatchableError as error:
-        attempt.rejectionReason = some("capture response error: " & error.msg)
+        attempt.rejectionReason = some("capture response error: " & safeDiagnostic(error.msg))
     let text = client.textOf(response, "", request.url)
     if capturing:
-      if text.validateUtf8() == -1: attempt.response = %text
+      if scalarUtf8(text): attempt.response = %text
       else:
         attempt.response = newJNull()
         attempt.rejectionReason = some("invalid UTF-8 model text; original body bytes retained, text unavailable")
@@ -630,7 +630,7 @@ proc choosePromptAction*(client: LlmClient, view: JsonNode, prompt: string,
       raise newException(GarbleError, "model decision must be an object")
   except CatchableError as error:
     if capturing:
-      attempt.rejectionReason = some(error.msg)
+      attempt.rejectionReason = some(safeDiagnostic(error.msg))
       if attempt.latencyMs.isNone: attempt.latencyMs = some((epochTime() - started) * 1000.0)
       if attempt.responseComplete.isNone: attempt.responseComplete = some(false)
       try: capture.evidence = privateEnvelope(attempt, request.body)
@@ -639,4 +639,4 @@ proc choosePromptAction*(client: LlmClient, view: JsonNode, prompt: string,
   if capturing:
     try: capture.evidence = privateEnvelope(attempt, request.body)
     except CatchableError as error:
-      capture.evidence = %*{"schema": CaptureProtocol, "telemetry_error": error.msg}
+      capture.evidence = %*{"schema": CaptureProtocol, "telemetry_error": safeDiagnostic(error.msg)}

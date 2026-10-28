@@ -1,6 +1,6 @@
 ## Independent production-sim reconstruction of retained native socket/HTTP runs.
 ## Usage: native_capture_reconstruct RUN_DIRECTORY
-import std/[json, os, strutils]
+import std/[base64, json, os, strutils]
 import garble/[sim, llm, training_capture]
 
 let directory = paramStr(1)
@@ -25,10 +25,30 @@ for index, event in events:
     var found = false
     for row in rows:
       if row["decision_id"].getStr() != $event.turn & "-" & $seat: continue
-      doAssert row["observation"]["view"] == simultaneous.seatDecisionView(seat)
-      doAssert row["observation"]["physical_family"]["split_group"].getStr() ==
+      var observation = row["observation"]
+      var actual = row["executed_action"]
+      if observation.hasKey("invalid_native_evidence_json_b64"):
+        doAssert row["selected_attempt_id"].kind == JNull and row["executed_action"].kind == JNull
+        doAssert row["attempts"].len == 0 and row["action_status"].getStr() in ["rejected", "fallback"]
+        # Inspection only: replay exact native bytes, never rewrite an artifact/target.
+        let original = parseJson(decode(observation["invalid_native_evidence_json_b64"].getStr()))
+        observation = original["observation"]
+        actual = original["executed_action"]
+      doAssert observation["view"] == simultaneous.seatDecisionView(seat)
+      doAssert observation["physical_family"]["split_group"].getStr() ==
         initSim(config).physicalFamily()
-      for native in row["observation"]["native_events"]:
+      var expected = %*{"channel": "RADIO", "text": "", "notes": simultaneous.notes[seat], "confirm": nil}
+      for recorded in events:
+        if recorded.turn != event.turn or recorded.seat != seat: continue
+        if recorded.kind == evSay:
+          expected["channel"] = %(if recorded.channel == Radio: "RADIO" else: simultaneous.names[recorded.channel])
+          expected["text"] = %recorded.text
+          expected["notes"] = %recorded.notes
+        if recorded.kind == evConfirm:
+          expected["confirm"] = %*{"ticket": recorded.ticket, "side": $recorded.side,
+            "commodity": Commodities[recorded.commodity], "qty": recorded.qty, "price": recorded.price}
+      doAssert actual == expected, "captured target differs from authoritative native replay command"
+      for native in observation["native_events"]:
         doAssert native["turn"].getInt() == event.turn
         doAssert native["seat"].getInt() == seat
         var matched = false
