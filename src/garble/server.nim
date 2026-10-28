@@ -30,7 +30,8 @@ import
   mummy,
   mummy/routers,
   llm,
-  sim
+  sim,
+  training_capture
 
 const
   ReplayVersion = 1
@@ -44,6 +45,7 @@ type
     selection: PromptSelection
     config: GameConfig
     sim: Sim
+    capture: RuntimeCapture
     pendingTurn: int
     pendingDecisions: Table[int, Decision]
     pendingSources: Table[int, string]
@@ -244,6 +246,10 @@ proc finishEpisode(runtimeConfig: RuntimeConfig) =
       final["slot"] = %slot
       socket.send($final)
     state.broadcastLocked()
+    if state.capture != nil:
+      try: state.capture.finishCapture(results)
+      except CatchableError as error:
+        echo "garble capture: private artifact failed: ", error.msg
 
   sleep(500)
   echo "garble: writing results and replay"
@@ -359,9 +365,13 @@ proc playEpisode(runtimeConfig: RuntimeConfig) {.gcsafe.} =
         state.pendingTurn = simCopy.turn
         state.pendingDecisions.clear()
         state.pendingSources.clear()
+        if state.capture != nil:
+          try: state.capture.beginCaptureTurn(simCopy)
+          except CatchableError as error:
+            echo "garble capture: begin turn failed: ", error.msg
         for seat in 0 ..< Seats:
           if state.playerSockets.hasKey(seat):
-            state.playerSockets[seat].send($ %*{
+            var frame = %*{
               "type": "turn",
               "turn": simCopy.turn,
               "timeout_ms": effective * 1000,
@@ -369,7 +379,9 @@ proc playEpisode(runtimeConfig: RuntimeConfig) {.gcsafe.} =
               "system": state.selection.ordinarySystemPrompt(),
               "prompt_selection": state.selection.selectionMetadata(),
               "view": simCopy.seatDecisionView(seat)
-            })
+            }
+            if state.capture != nil: frame["private_capture"] = %CaptureProtocol
+            state.playerSockets[seat].send($frame)
             waitingSeats.add(seat)
       while waitingSeats.len > 0 and epochTime() < decisionDeadline:
         var received = 0
@@ -384,6 +396,8 @@ proc playEpisode(runtimeConfig: RuntimeConfig) {.gcsafe.} =
       var decisions = newSeq[Decision](Seats)
       var wasScripted = newSeq[bool](Seats)
       var accepted = newSeq[bool](Seats)
+      var mixedOrigins: seq[bool]
+      if state.capture != nil: mixedOrigins = newSeq[bool](Seats)
       withLock stateLock:
         for seat in 0 ..< Seats:
           if state.pendingDecisions.hasKey(seat):
@@ -411,6 +425,7 @@ proc playEpisode(runtimeConfig: RuntimeConfig) {.gcsafe.} =
             state.sim.applySay(seat, fallback.channel, fallback.text, "", true)
             wasScripted[seat] = true
             accepted[seat] = false
+            if state.capture != nil: mixedOrigins[seat] = decision.hasConfirm
           state.broadcastLocked()
         ## Confirms, in seat order, after every transmission has landed.
         for seat in 0 ..< Seats:
@@ -426,6 +441,13 @@ proc playEpisode(runtimeConfig: RuntimeConfig) {.gcsafe.} =
             ## malformed one lands here, and it costs the seat its confirm.
             echo "garble: confirm rejected (", error.msg, ")"
           state.broadcastLocked()
+        if state.capture != nil:
+          var fallback = newSeq[bool](Seats)
+          for seat in 0 ..< Seats:
+            fallback[seat] = not accepted[seat]
+          try: state.capture.appliedCaptureTurn(state.sim, fallback, mixedOrigins)
+          except CatchableError as error:
+            echo "garble capture: applied turn failed: ", error.msg
         state.sim.endTurn()
         state.broadcastLocked()
         for seat in 0 ..< Seats:
@@ -580,20 +602,44 @@ proc websocketHandler(
         return
       try:
         let payload = parseJson(message.data)
-        if payload{"type"}.getStr() == "decision":
+        let kind = payload{"type"}.getStr()
+        if kind in ["decision", "private_attempt"]:
           let turn = payload["turn"].getInt()
-          let action = payload["action"]
-          if action.kind != JObject:
-            raise newException(GarbleError, "decision action must be an object")
           withLock stateLock:
-            if turn == state.pendingTurn and
-                not state.pendingDecisions.hasKey(slot):
-              let source = payload{"source"}.getStr("player")
-              if source notin ["player", "scripted", "fallback"]:
-                raise newException(GarbleError, "unknown decision source")
-              state.pendingDecisions[slot] = parseDecision(state.sim, slot,
-                action)
-              state.pendingSources[slot] = source
+            let current = turn == state.pendingTurn
+            let available = current and not state.pendingDecisions.hasKey(slot)
+            var captureIndex = -1
+            if state.capture != nil:
+              try:
+                captureIndex = state.capture.receivedFrame(turn, slot, payload,
+                  if not current: "late or unopened turn"
+                  elif not available: "duplicate action ignored"
+                  elif kind == "private_attempt": "attempt only; no action supplied"
+                  else: "received action")
+              except CatchableError as error:
+                echo "garble capture: receive failed: ", error.msg
+            if kind == "decision":
+              try:
+                let action = payload["action"]
+                if action.kind != JObject:
+                  raise newException(GarbleError, "decision action must be an object")
+                if available:
+                  let source = payload{"source"}.getStr("player")
+                  if source notin ["player", "scripted", "fallback"]:
+                    raise newException(GarbleError, "unknown decision source")
+                  let parsed = parseDecision(state.sim, slot, action)
+                  state.pendingDecisions[slot] = parsed
+                  state.pendingSources[slot] = source
+                  if state.capture != nil:
+                    try: state.capture.selectedFrame(turn, slot, captureIndex,
+                      state.sim.decisionJson(parsed))
+                    except CatchableError as error:
+                      echo "garble capture: selection failed: ", error.msg
+              except CatchableError as error:
+                if state.capture != nil:
+                  try: state.capture.rejectedFrame(turn, slot, captureIndex, "native action rejected: " & error.msg)
+                  except CatchableError: discard
+                raise
       except CatchableError as error:
         echo "garble: ignoring bad player frame: ", error.msg
     of ErrorEvent:
@@ -653,6 +699,9 @@ proc runGameServer*(config: GameConfig, runtimeConfig: RuntimeConfig) =
   state.selection = promptSelection(parseJson(runtimeConfig.config))
   state.config = config
   state.sim = initSim(config)
+  try: state.capture = newRuntimeCapture(state.sim)
+  except CatchableError as error:
+    echo "garble capture: initialization failed: ", error.msg
   state.pendingTurn = -1
   state.pendingDecisions = initTable[int, Decision]()
   state.pendingSources = initTable[int, string]()

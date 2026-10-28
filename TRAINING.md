@@ -39,6 +39,70 @@ version-1 rows without that metadata. New artifacts carry hashes and selection
 into exported examples. Capture/export usage remains in
 [the ordinary player guide](players/ordinary/README.md).
 
+## Native private telemetry
+
+Setting `COGAME_SAVE_TRAJECTORY_URI` opts the game into private decision-trajectory
+capture. `COWORLD_EPISODE_ID`, `COWORLD_GAME_VERSION`, and
+`COWORLD_SOURCE_REVISION` must identify the run. The ordinary v3 turn frame then
+carries an optional `private_capture` flag outside the model view. Native Nim
+players attach `garble.private-attempt.v1` evidence to their decision, or send an
+attempt-only frame after a failed call. Legacy clients can ignore this extension.
+Game rules, prompts, parsers, simultaneous dispatch, deadlines, and retries are
+unchanged. No new telemetry is emitted to public replay or spectator state.
+
+Private records retain the actual request body, received response bytes, normalized
+response headers, original model text and action proposal, authenticated socket
+seat/turn, and actual say/confirm events with installed notes. Curly does not expose
+original header-wire bytes. Failed transports may expose no partial response;
+late, missing, malformed, and oversized evidence remains a gap. Bounds are 16 KiB
+request, 16 KiB response, 4 KiB headers, 48 KiB envelope, and four retained frames
+per seat/turn; excess frame counts and invalid telemetry reasons remain visible.
+The private wire sends each request/response body once as base64 plus the request
+object and original target text. The game restores prompt messages and valid UTF-8
+response text only from verified lossless bytes before the strict evidence reader;
+invalid UTF-8 retains bytes with a null text field. Invalid telemetry inside the existing wire limit never rejects an otherwise valid
+game action. The native player checks its full serialized decision against the
+existing 64 KiB WebSocket limit and replaces or omits private metadata when needed;
+it sends the original action and logs the gap. Frames already over the native wire
+limit retain their existing transport failure behavior.
+
+Capture alone authenticates neither a caller's policy/model claims nor its call
+ID. Admission requires external authenticated receipt/source/image/participant
+joins, strict JSON validation (including duplicate keys and non-finite numbers),
+and typed equality of every raw supplied action field with the applied action.
+Preserve original fenced responses and all normalization exclusions. Parsed-action
+installation, a legal void confirmation, and profitable play are separate facts;
+scripted/fallback actions are never approved teacher labels by this capture path.
+
+The split family conservatively groups the root world/noise seed across all
+wordings and rule variants. A separate exact setup hash retains generated market,
+contracts, endowments, delivery seed, noise/bursts, and consequential configuration.
+Policy names and wording choices cannot create independent families. Existing
+bridge/script exports and ordinary v1 artifacts retain their original formats and
+remain separate from authenticated native model targets.
+
+Run the bounded native proof against already built game/player binaries:
+
+```sh
+uv run --no-project --with websocket-client==1.9.2 python tools/ci/native_capture_smoke.py bin/garble bin/garble-player /tmp/garble-capture-positive --case positive
+nim c -d:release --path:src -o:/tmp/garble-capture-reconstruct tools/ci/native_capture_reconstruct.nim
+/tmp/garble-capture-reconstruct /tmp/garble-capture-positive
+```
+
+The isolated invalid-UTF8 caller proof additionally uses `websockets==17.2`:
+
+```sh
+uv run --no-project --with websocket-client==1.9.2 --with websockets==17.2 python tools/ci/native_capture_utf8.py bin/garble-player /tmp/garble-capture-reconstruct /tmp/garble-capture-positive /tmp/garble-capture-utf8
+```
+
+Each full-game invocation retains one complete game and its failures, uses whitelisted
+subprocess environments and loopback-only synthetic HTTP replies, and has a
+180-second wall limit. Other cases exercise normalization, 429, malformed replies,
+timeout, invalid telemetry, legacy clients, large responses, and the native frame
+boundary. `--case ordinary` preserves the full twelve-turn/default-clock game;
+other cases explicitly shorten pacing and deadlines. These fixtures produce zero
+authenticated training targets. Use a new output directory for every invocation.
+
 ## Checks and experiments
 
 `tools/test_prompt_games.py BRIDGE` runs 30 complete wording and normalization games.
