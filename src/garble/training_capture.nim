@@ -55,6 +55,8 @@ proc strictRawObject(text: string): JsonNode =
       elif character == '"': quoted = false
       elif ord(character) < 32: raise newException(ValueError, "unescaped control character")
     elif character == '"': quoted = true
+    elif ord(character) <= 32 and character notin {' ', '\t', '\r', '\n'}:
+      raise newException(ValueError, "non-JSON whitespace/control character")
     elif character == '/': raise newException(ValueError, "JSON comments are forbidden")
     inc index
   if quoted: raise newException(ValueError, "unterminated JSON string")
@@ -429,13 +431,18 @@ proc receivedResponse*(attempt: var DecisionAttempt, response: Response, latency
       break
   try:
     let payload = parseJson(response.body)
+    if payload.kind != JObject: return
     if payload{"model"}.getStr().len > 0: attempt.model = some(payload["model"].getStr())
     if payload{"stop_reason"}.getStr().len > 0: attempt.stopReason = some(payload["stop_reason"].getStr())
-    if payload.hasKey("usage"):
+    let usage = payload{"usage"}
+    if usage != nil and usage.kind == JObject:
       for key in ["input_tokens", "output_tokens"]:
-        if payload["usage"].hasKey(key):
-          if key == "input_tokens": attempt.inputTokens = some(payload["usage"][key].getInt())
-          else: attempt.outputTokens = some(payload["usage"][key].getInt())
+        let count = usage{key}
+        # Optional malformed usage is unknown, never a fabricated zero or a
+        # reason to change the already received native action/response bytes.
+        if count != nil and count.kind == JInt and count.getBiggestInt() >= 0:
+          if key == "input_tokens": attempt.inputTokens = some(count.getInt())
+          else: attempt.outputTokens = some(count.getInt())
   except CatchableError: discard
 
 proc privateEnvelope*(attempt: DecisionAttempt, body: string): JsonNode =

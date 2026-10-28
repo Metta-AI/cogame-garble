@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Actual native player HTTP+WS malformed UTF-8 proof; no full game or provider."""
+"""Native player HTTP+WS malformed-response proofs; no full game or provider."""
 
 import argparse
 import base64
@@ -9,6 +9,7 @@ from pathlib import Path
 import socket
 import subprocess
 import threading
+import traceback
 import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from websockets.sync.server import serve
@@ -26,6 +27,18 @@ def main():
     parser.add_argument("reconstructor", type=Path)
     parser.add_argument("ordinary_run", type=Path)
     parser.add_argument("output", type=Path)
+    parser.add_argument(
+        "--case",
+        choices=[
+            "utf8",
+            "usage-absent",
+            "usage-null",
+            "usage-scalar",
+            "usage-invalidtokens",
+            "json-vtab",
+        ],
+        default="utf8",
+    )
     args = parser.parse_args()
     out = args.output.resolve()
     out.mkdir(parents=True, exist_ok=False, mode=0o700)
@@ -42,24 +55,40 @@ def main():
         "notes": "",
         "confirm": None,
     }
-    text = "INVALID_UTF8_PREFIX\n" + json.dumps(action)
-    body = (
-        json.dumps(
-            {
-                "model": "anthropic/claude-haiku-4.5",
-                "content": [{"type": "text", "text": text}],
-                "stop_reason": "end_turn",
-                "usage": {"input_tokens": 0, "output_tokens": 0},
-            }
-        )
-        .encode()
-        .replace(b"INVALID_UTF8_PREFIX", b"\xff")
-    )
-    assert b"\xff" in body
+    text = ("INVALID_UTF8_PREFIX\n" if args.case == "utf8" else "") + json.dumps(action)
+    if args.case == "json-vtab":
+        text = text.replace(",", ",\v", 1)
+        try:
+            json.loads(text)
+        except json.JSONDecodeError:
+            pass
+        else:
+            raise AssertionError("fixture must violate strict JSON whitespace")
+    payload = {
+        "model": "anthropic/claude-haiku-4.5",
+        "content": [{"type": "text", "text": text}],
+        "stop_reason": "end_turn",
+        "usage": {"input_tokens": 0, "output_tokens": 0},
+    }
+    if args.case == "usage-absent":
+        del payload["usage"]
+    elif args.case == "usage-null":
+        payload["usage"] = None
+    elif args.case == "usage-scalar":
+        payload["usage"] = 7
+    elif args.case == "usage-invalidtokens":
+        payload["usage"] = {"input_tokens": "7", "output_tokens": -1}
+    body = json.dumps(payload).encode()
+    if args.case == "utf8":
+        body = body.replace(b"INVALID_UTF8_PREFIX", b"\xff")
+        assert b"\xff" in body
     call = str(
-        uuid.uuid5(uuid.NAMESPACE_URL, "LOCAL-SYNTHETIC-GARBLE-UTF8-NOT-AUTHENTICATED")
+        uuid.uuid5(
+            uuid.NAMESPACE_URL,
+            "LOCAL-SYNTHETIC-GARBLE-COMPONENT-NOT-AUTHENTICATED:" + args.case,
+        )
     )
-    (out / "actual-invalid-response.bin").write_bytes(body)
+    (out / "actual-response.bin").write_bytes(body)
     errors, emitted = [], []
     done = threading.Event()
 
@@ -124,16 +153,38 @@ def main():
                 json.dumps(frame, indent=2) + "\n"
             )
             (out / "native-emitted-frame.bin").write_bytes(wire.encode())
-            assert frame["type"] == "decision" and frame["source"] == "player"
-            assert frame["action"] == action
+            assert frame["source"] == "player"
+            if args.case == "json-vtab":
+                # The unchanged native parser rejects this before an action is
+                # emitted. Preserve its actual attempt-only frame, not a
+                # fabricated decision carrying the intended object.
+                assert frame["type"] == "private_attempt" and "action" not in frame
+            else:
+                assert frame["type"] == "decision" and frame["action"] == action
             attempt = frame["private_attempt"]["attempt"]
-            assert attempt["response"] is None and attempt["raw_response"] is None
+            assert (
+                attempt["raw_response"] is None
+            )  # Exact bytes restore this at the server.
+            if args.case == "utf8":
+                assert attempt["response"] is None
+            else:
+                assert attempt["response"] == text
+                if args.case.startswith("usage-"):
+                    assert (
+                        attempt["input_tokens"] is None
+                        and attempt["output_tokens"] is None
+                    )
+                else:
+                    assert (
+                        attempt["input_tokens"] == 0 and attempt["output_tokens"] == 0
+                    )
             assert base64.b64decode(attempt["response_body_b64"]) == body
-            assert "invalid UTF-8 model text" in attempt["rejection_reason"]
+            if args.case == "utf8":
+                assert "invalid UTF-8 model text" in attempt["rejection_reason"]
             emitted.append(frame)
             connection.send(json.dumps({"type": "final", "scores": [0, 0, 0, 0, 0]}))
-        except BaseException as error:
-            errors.append(repr(error))
+        except BaseException:
+            errors.append(traceback.format_exc())
         finally:
             done.set()
 
@@ -207,24 +258,41 @@ def main():
     ]
     assert capture[-1]["status"] == "truncated"
     row = next(row for row in capture[:-1] if row["seat"] == "0")
-    assert row["action_status"] == "rejected" and row["selected_attempt_id"] is None
     attempt = row["attempts"][0]
-    assert attempt["response"] is None and attempt["raw_response"] is None
-    assert (
-        not attempt["accepted"]
-        and base64.b64decode(attempt["response_body_b64"]) == body
-    )
+    if args.case == "utf8":
+        assert row["action_status"] == "rejected" and row["selected_attempt_id"] is None
+        assert attempt["response"] is None and attempt["raw_response"] is None
+        assert not attempt["accepted"]
+    else:
+        if args.case == "json-vtab":
+            assert row["action_status"] == "fallback" and not attempt["accepted"]
+            selected = next(
+                item
+                for item in row["attempts"]
+                if item["attempt_id"] == row["selected_attempt_id"]
+            )
+            assert selected["origin"] == "fallback"
+            assert attempt["rejection_reason"]
+        else:
+            assert row["action_status"] == "accepted" and attempt["accepted"]
+            assert attempt["input_tokens"] is None and attempt["output_tokens"] is None
+        assert attempt["response"] == text and attempt["raw_response"].encode() == body
+    assert base64.b64decode(attempt["response_body_b64"]) == body
     (out / "proof.json").write_text(
         json.dumps(
             {
                 "native_player_normal_exit": True,
-                "actual_invalid_utf8_received_body_b64": base64.b64encode(
-                    body
-                ).decode(),
-                "native_action_unchanged": True,
+                "actual_received_body_b64": base64.b64encode(body).decode(),
+                "native_action_unchanged": args.case != "json-vtab",
+                "native_parser_rejection_without_action": args.case == "json-vtab",
                 "emitted_ws_valid_utf8": True,
-                "nullable_invalid_text_and_exact_bytes_retained": True,
-                "actual_server_capture_unselectable": True,
+                "native_text_or_explicit_gap_and_exact_bytes_retained": True,
+                "case": args.case,
+                "actual_server_capture_unselectable": args.case
+                in {"utf8", "json-vtab"},
+                "invalid_usage_unknown_without_changing_action": args.case.startswith(
+                    "usage-"
+                ),
                 "full_game_invocations": 0,
                 "synthetic_http_calls": 1,
                 "authenticated_receipts": 0,
@@ -235,7 +303,7 @@ def main():
         )
         + "\n"
     )
-    print("Native HTTP+WS malformed UTF-8 and authoritative capture rejection PASS")
+    print("Native HTTP+WS " + args.case + " authoritative capture proof PASS")
 
 
 if __name__ == "__main__":

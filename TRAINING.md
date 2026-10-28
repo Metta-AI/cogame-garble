@@ -95,6 +95,13 @@ The isolated invalid-UTF8 caller proof additionally uses `websockets==17.2`:
 uv run --no-project --with websocket-client==1.9.2 --with websockets==17.2 python tools/ci/native_capture_utf8.py bin/garble-player /tmp/garble-capture-reconstruct /tmp/garble-capture-positive /tmp/garble-capture-utf8
 ```
 
+The same component proof accepts `--case usage-absent`, `usage-null`,
+`usage-scalar`, and `usage-invalidtokens` to exercise malformed optional usage
+without changing the native action. `--case json-vtab` preserves the native
+parser's attempt-only rejection and reconstructs the native quoter fallback;
+the original invalid model text remains unselected. Each component finalizes the
+real player without running another full game.
+
 Each full-game invocation retains one complete game and its failures, uses whitelisted
 subprocess environments and loopback-only synthetic HTTP replies, and has a
 180-second wall limit. Other cases exercise normalization, 429, malformed replies,
