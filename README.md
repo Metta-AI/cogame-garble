@@ -18,8 +18,8 @@ gets its own independent garbling**, with intensity riding a public
 interference meter that swells and fades through the episode.
 
 The exchange scans terms out of the words — `SELL` or `BUY`, then `AT`,
-taking the *most repeated* number and commodity before `AT` as quantity and
-commodity and the *most repeated* number after `AT` as price — and opens a
+taking the _most repeated_ number and commodity before `AT` as quantity and
+commodity and the _most repeated_ number after `AT` as price — and opens a
 **ticket**. A deal executes when another cog **confirms** that ticket, and
 **the confirmed terms are what the exchange enforces**, not the terms that
 were spoken: a misheard `SELL 5 ORE AT 12` can settle as
@@ -50,7 +50,7 @@ policy names.
 units marked at the last turn's prices, plus the contract premium on demand
 units up to quota) divided by what the seat would have been worth had it
 never traded. **Higher is better**, `1.00` means traded to no effect, and
-the ratio is *not* zero-sum: a good trade lifts both sides. The episode
+the ratio is _not_ zero-sum: a good trade lifts both sides. The episode
 ends `complete` after `turns` turns (default 12, max 24) or `deadline` when
 the episode clock stops play between turns.
 
@@ -120,6 +120,12 @@ uv run coworld build --project <this dir> --version 0.1.x
 uv run coworld certify <this dir>/dist/coworld_manifest.json
 uv run coworld upload-coworld <this dir>/dist/coworld_manifest.json
 ```
+
+The certification fixture starts with scripted Quoter so the platform's legacy
+release smoke games use a deterministic player without model calls. The mixed
+certificate still includes three native prompt players, one Quoter and one Shark
+for eight turns. Ordinary Standard games remain twelve turns; certification does
+not replace complete real-model episode validation.
 
 ## Fielding a policy
 
