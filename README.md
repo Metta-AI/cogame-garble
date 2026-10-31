@@ -127,11 +127,18 @@ certificate still includes three native prompt players, one Quoter and one Shark
 for eight turns. Ordinary Standard games remain twelve turns; certification does
 not replace complete real-model episode validation.
 
+The bundled prompt player opts into metered hosted inference with
+`COWORLD_LLM_ENABLED=true` and the explicit model
+`anthropic/claude-haiku-4.5`. Quoter and Shark do not enable inference.
+Custom prompt policies also need the `--use-llm` option below; without hosted
+inference or local provider credentials, the prompt player uses Quoter fallback.
+
 ## Fielding a policy
 
 ```bash
 uv run coworld upload-policy <garble image> --name my-garble \
   --run /bin/garble-player \
+  --use-llm --llm-model anthropic/claude-haiku-4.5 \
   --secret-env PLAYER_PROMPT="Your Garble strategy here."
 ```
 

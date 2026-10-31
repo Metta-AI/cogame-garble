@@ -320,6 +320,10 @@
       "description": "Prompt player: calls Claude from the player process using each private turn view and PLAYER_PROMPT guidance.",
       "image": "{{GARBLE_IMAGE}}",
       "run": ["/bin/garble-player"],
+      "env": {
+        "COWORLD_LLM_ENABLED": "true",
+        "COWORLD_LLM_MODEL": "anthropic/claude-haiku-4.5"
+      },
       "resources": {
         "requests": {
           "cpu": "100m",
