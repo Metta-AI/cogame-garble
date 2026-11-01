@@ -1,20 +1,39 @@
 #!/usr/bin/env python3
 """Run canned, prompt, and scripted Garble players on one native game build."""
 
+import argparse
 import json
-import zipfile
-import os
 import socket
 import subprocess
 import sys
 import tempfile
 import threading
 import time
+import zipfile
+from contextlib import nullcontext
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-GAME, PLAYER = sys.argv[1:3]
+from native_capture_smoke import BASE
+
 ROOT = Path(__file__).resolve().parents[2]
+parser = argparse.ArgumentParser(description=__doc__)
+parser.add_argument("game", type=Path)
+parser.add_argument("player", type=Path)
+parser.add_argument(
+    "--manifest", type=Path, default=ROOT / "coworld_manifest_template.json"
+)
+parser.add_argument(
+    "--output",
+    type=Path,
+    help="Retain complete fixture and failure artifacts in a new directory.",
+)
+args = parser.parse_args()
+GAME, PLAYER = str(args.game.resolve()), str(args.player.resolve())
+manifest = json.loads(args.manifest.read_text())
+prompt_profile = next(p for p in manifest["player"] if p["id"] == "garble-player").get(
+    "env", {}
+)
 sys.path.insert(0, str(ROOT / "players/ordinary"))
 from player import baseline_action  # noqa: E402
 
@@ -44,8 +63,8 @@ class Stub(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(encoded)
 
-    def log_message(self, *_args):
-        pass
+    def log_message(self, format: str, *_args) -> None:
+        del format
 
 
 def free_port():
@@ -57,7 +76,12 @@ def free_port():
 model = ThreadingHTTPServer(("127.0.0.1", free_port()), Stub)
 threading.Thread(target=model.serve_forever, daemon=True).start()
 port = free_port()
-with tempfile.TemporaryDirectory(prefix="garble-policy-") as scratch:
+if args.output is not None:
+    args.output.mkdir(parents=True, exist_ok=False)
+    storage = nullcontext(str(args.output.resolve()))
+else:
+    storage = tempfile.TemporaryDirectory(prefix="garble-policy-")
+with storage as scratch:
     for seed in (11, 15):
         root = Path(scratch) / f"episode-{seed}"
         root.mkdir()
@@ -76,7 +100,7 @@ with tempfile.TemporaryDirectory(prefix="garble-policy-") as scratch:
             "player_connect_timeout_seconds": 8,
         }
         (root / "config.json").write_text(json.dumps(config))
-        game_env = os.environ.copy()
+        game_env = BASE.copy()
         game_env.update(
             {
                 "COGAME_HOST": "127.0.0.1",
@@ -112,14 +136,21 @@ with tempfile.TemporaryDirectory(prefix="garble-policy-") as scratch:
                     {"PLAYER_SCRIPTED": "quoter"},
                 )
             ):
-                env = os.environ.copy()
+                env = BASE.copy()
                 env.update(settings)
                 env.update(
                     {
                         "COWORLD_PLAYER_WS_URL": f"ws://127.0.0.1:{port}/player?slot={slot}&token=token-{slot}",
-                        "COWORLD_LLM_ENDPOINT": f"http://127.0.0.1:{model.server_port}",
                     }
                 )
+                if slot == 1:
+                    env.update(prompt_profile)
+                    # Exercise the hosted opt-in instead of granting inference
+                    # unconditionally. An empty profile must fail the HTTP count.
+                    if prompt_profile.get("COWORLD_LLM_ENABLED") == "true":
+                        env["COWORLD_LLM_ENDPOINT"] = (
+                            f"http://127.0.0.1:{model.server_port}"
+                        )
                 if slot == 0:
                     env.update(
                         POC_CAPTURE_TRAINING="1",

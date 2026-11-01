@@ -20,19 +20,14 @@
     "runnable": {
       "type": "game",
       "image": "{{GARBLE_IMAGE}}",
-      "run": [
-        "/bin/garble"
-      ],
+      "run": ["/bin/garble"],
       "source_url": "https://github.com/Metta-AI/cogame-garble/tree/main"
     },
     "config_schema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "type": "object",
       "additionalProperties": false,
-      "required": [
-        "tokens",
-        "players"
-      ],
+      "required": ["tokens", "players"],
       "properties": {
         "tokens": {
           "description": "One connection token per player slot, indexed by slot.",
@@ -52,9 +47,7 @@
           "items": {
             "type": "object",
             "additionalProperties": false,
-            "required": [
-              "name"
-            ],
+            "required": ["name"],
             "properties": {
               "name": {
                 "type": "string",
@@ -326,9 +319,11 @@
       "type": "player",
       "description": "Prompt player: calls Claude from the player process using each private turn view and PLAYER_PROMPT guidance.",
       "image": "{{GARBLE_IMAGE}}",
-      "run": [
-        "/bin/garble-player"
-      ],
+      "run": ["/bin/garble-player"],
+      "env": {
+        "COWORLD_LLM_ENABLED": "true",
+        "COWORLD_LLM_MODEL": "anthropic/claude-haiku-4.5"
+      },
       "resources": {
         "requests": {
           "cpu": "100m",
@@ -346,9 +341,7 @@
       "type": "player",
       "description": "The honest repeater: submits its own deterministic quoter decision through the ordinary player socket.",
       "image": "{{GARBLE_IMAGE}}",
-      "run": [
-        "/bin/garble-player"
-      ],
+      "run": ["/bin/garble-player"],
       "env": {
         "PLAYER_SCRIPTED": "quoter"
       },
@@ -369,9 +362,7 @@
       "type": "player",
       "description": "The terse opportunist: submits its own shark decision through the ordinary player socket.",
       "image": "{{GARBLE_IMAGE}}",
-      "run": [
-        "/bin/garble-player"
-      ],
+      "run": ["/bin/garble-player"],
       "env": {
         "PLAYER_SCRIPTED": "shark"
       },
@@ -508,10 +499,10 @@
     },
     "players": [
       {
-        "player_id": "garble-player"
+        "player_id": "garble-quoter"
       },
       {
-        "player_id": "garble-quoter"
+        "player_id": "garble-player"
       },
       {
         "player_id": "garble-player"
